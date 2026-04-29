@@ -393,6 +393,9 @@
       minSpawnInterval: 0.20,
       spawnIntervalWaveReduction: 0.018,
       maxTemplatesPerWave: 3,
+      minWaveEnemyTotal: 18,
+      minConcurrentEnemies: 6,
+      lowDensitySpawnBoost: 0.42,
     },
 
     enemyRoles: {
@@ -931,6 +934,22 @@
     if(waveMod && waveMod.extraSpawns){
       const count=waveMod.extraSpawns*3;
       groups.push({template:"Overrun",enemy:"grunt",remaining:count,total:count,spawn:"surround",burst:2,delay:1.2,spawned:0});
+    }
+
+    const total=groups.reduce((s,g)=>s+g.total,0);
+    const minTotal=Math.max(1,Math.round(TUNING.encounters.minWaveEnemyTotal+(w-1)*1.2));
+    if(total<minTotal){
+      const deficit=minTotal-total;
+      groups.push({
+        template:"Density Floor",
+        enemy:w>=6?"runner":"grunt",
+        remaining:deficit,
+        total:deficit,
+        spawned:0,
+        spawn:"surround",
+        burst:Math.max(2,Math.round(1+deficit/8)),
+        delay:.4
+      });
     }
 
     return {
@@ -2014,7 +2033,7 @@
     for(const w of Object.values(p.weapons))w.cd-=dt;if(mouse.down){const mx=p.x+Math.cos(p.angle)*22,my=p.y+Math.sin(p.angle)*22;for(const [id,w]of Object.entries(p.weapons))if(w.unlocked&&w.cd<=0){fireWeapon(id,mx,my,p.angle);w.cd=Math.max(.055,w.fireRate)}}
     const droneClaims=new Set();for(let i=0;i<p.drones;i++){const a=state.t*1.7+i*TAU/Math.max(1,p.drones),dx=p.x+Math.cos(a)*48,dy=p.y+Math.sin(a)*48,t=nearestEnemyExcluding(dx,dy,p.droneRange,droneClaims);if(t)droneClaims.add(t.id);if(t&&((state.t/p.droneFireRate+i*.37)%1)<dt/p.droneFireRate){const aa=angleTo({x:dx,y:dy},t);pushPlayerBullet({x:dx,y:dy,vx:Math.cos(aa)*p.droneSpeed,vy:Math.sin(aa)*p.droneSpeed,r:3.4,life:1.0,damage:p.droneDamage*p.globalDamage,pierce:0,color:"#d9f2ff",enemy:false,type:"drone"})}}
     if(maybeResolveWaveClear())return
-    state.encounterAge+=dt;state.spawnTimer-=dt;if(state.spawnTimer<=0&&(!state.encounter||!state.encounter.complete)){const spawned=spawnNextEncounterBurst();state.spawnTimer=spawned?clamp(TUNING.encounters.baseSpawnInterval-state.wave*TUNING.encounters.spawnIntervalWaveReduction,TUNING.encounters.minSpawnInterval,TUNING.encounters.baseSpawnInterval):0.35}
+    state.encounterAge+=dt;state.spawnTimer-=dt;if(state.spawnTimer<=0&&(!state.encounter||!state.encounter.complete)){const activeNonBoss=state.enemies.filter(e=>!e.dead&&e.type!=="boss").length;const lowDensity=activeNonBoss<TUNING.encounters.minConcurrentEnemies;const spawned=spawnNextEncounterBurst();const baseCadence=clamp(TUNING.encounters.baseSpawnInterval-state.wave*TUNING.encounters.spawnIntervalWaveReduction,TUNING.encounters.minSpawnInterval,TUNING.encounters.baseSpawnInterval);const boosted=lowDensity?Math.max(TUNING.encounters.minSpawnInterval,baseCadence*TUNING.encounters.lowDensitySpawnBoost):baseCadence;state.spawnTimer=spawned?boosted:0.35}
     for(const e of state.enemies)e.shielded=false;for(const e of state.enemies){if(e.dead)continue;updateEnemyDots(e,dt);if(e.hp<=0){killEnemy(e);continue}const a=angleTo(e,p);e.angle=a;e.phase+=dt;if(e.type==="boss"){updateBoss(e,p,dt)}else if(e.type==="sniper"){
         const desired=410,d=Math.hypot(p.x-e.x,p.y-e.y),move=d>desired?1:d<desired*.72?-1:0;
         e.vx+=Math.cos(a)*e.speed*move*dt*1.8;
