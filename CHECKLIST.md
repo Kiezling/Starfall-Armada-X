@@ -94,17 +94,17 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 
 ## Phase 5 — Enemies
 
-- [ ] `enemies/types.ts` — 6 archetypes with distinct procedural silhouettes
-  - [ ] Wasp Drone
-  - [ ] Interceptor
-  - [ ] Lancer
-  - [ ] Bulwark
-  - [ ] Carrier
-  - [ ] Mine Layer
-- [ ] `enemies/ai.ts` — steering behaviours (seek, flee, pursue, orbit, separate, wander)
-- [ ] Per-archetype brains with distinct engagement ranges and patterns
-- [ ] Lancer beam telegraph (1.4 s, colour-coded, audible)
-- [ ] Bulwark frontal shield arc with flanking counterplay
+- [x] `enemies/types.ts` — 6 archetypes with distinct procedural silhouettes
+  - [x] Wasp Drone
+  - [x] Interceptor
+  - [x] Lancer
+  - [x] Bulwark
+  - [x] Carrier
+  - [x] Mine Layer
+- [x] `enemies/ai.ts` — steering behaviours (seek, flee, pursue, orbit, separate, wander)
+- [x] Per-archetype brains with distinct engagement ranges and patterns
+- [x] Lancer beam telegraph (1.4 s, colour-coded, audible)
+- [x] Bulwark frontal shield arc with flanking counterplay
 - [ ] Carrier drone spawning
 - [ ] Mine Layer persistent mines
 - [ ] Elite ("Seraph") variants: aura ring, buffed stats, health bar, guaranteed rare drop
@@ -114,13 +114,13 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 
 ## Phase 6 — Bosses
 
-- [ ] `enemies/bosses/boss.ts` — shared framework: phases, HP gates, pattern scheduler
-- [ ] Named bullet patterns: ring, fan, spiral, wall, aimed-burst, sweep
+- [x] `enemies/bosses/boss.ts` — shared framework: phases, HP gates, pattern scheduler
+- [x] Named bullet patterns: ring, fan, spiral, wall, aimed-burst, sweep
 - [ ] Boss health bar with phase segments
 - [ ] Phase-transition sequence: time dilation, camera push, palette shift, audio sweep
-- [ ] `bosses/hexard.ts` — 3 phases, splitting segments, travelling safe wedge
-- [ ] `bosses/vashkan.ts` — 3 phases, dogfighting AI, beam pylons, telegraphed dash-strike
-- [ ] `bosses/mawcore.ts` — 3 phases, sequenced shield plates, gravity pull, contracting arena
+- [x] `bosses/hexard.ts` — 3 phases, splitting segments, travelling safe wedge
+- [x] `bosses/vashkan.ts` — 3 phases, dogfighting AI, beam pylons, telegraphed dash-strike
+- [x] `bosses/mawcore.ts` — 3 phases, sequenced shield plates, gravity pull, contracting arena
 - [ ] Boss intro sequence with name card
 - [ ] Boss death sequence: chained explosions, slow motion, salvage burst
 

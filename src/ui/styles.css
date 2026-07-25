@@ -1263,6 +1263,200 @@ button {
 }
 
 /* =================================================================================================
+ * Additions for src/ui/menus.ts (boss intro), src/ui/hangar.ts (title/swatch), and
+ * src/ui/codex.ts (a whole new overlay). Structural language matches the blocks above:
+ * hairline borders, near-square corners, glass panels — nothing here restyles an existing rule.
+ * ============================================================================================= */
+
+/* --- Menus: boss intro dramatic name card -------------------------------------------------- */
+
+.bossintro-name {
+  text-align: center;
+  font-size: 36px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--enemy-accent);
+  margin-bottom: 8px;
+}
+.bossintro-subtitle {
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* --- Hangar: left-aligned title (menu-heading is centred, which the hangar-head row needs
+ * not to be) and the small two-tone swatch a livery node shows next to its description. ------ */
+
+.hangar-title {
+  font-size: 20px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin: 0;
+}
+.hangar-node-swatch {
+  width: 100%;
+  height: 10px;
+  border: 1px solid var(--border-thin);
+}
+
+/* =================================================================================================
+ * Codex (enemy / weapon / augment reference browser) — src/ui/codex.ts
+ * ============================================================================================= */
+
+.codex-root {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  background: rgba(2, 4, 8, 0.55);
+  box-sizing: border-box;
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+.codex-root * {
+  box-sizing: border-box;
+}
+.codex-root :focus-visible {
+  outline: 2px solid var(--hud-primary);
+  outline-offset: 2px;
+}
+.codex-root.is-visible {
+  display: flex;
+}
+
+.codex-panel {
+  background: var(--bg-panel-strong);
+  border: 1px solid var(--border-thin);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  padding: 28px 34px;
+  width: 860px;
+  max-width: 94vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.codex-title {
+  font-size: 20px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.codex-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-thin);
+  padding-bottom: 10px;
+  flex: none;
+}
+.codex-tab {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-thin);
+  color: var(--text-dim);
+  padding: 9px 14px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.codex-tab:hover,
+.codex-tab.is-focused {
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+.codex-tab.is-active {
+  color: var(--hud-primary);
+  border-color: var(--hud-primary);
+}
+
+.codex-content {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 320px;
+  flex: 1 1 auto;
+}
+
+.codex-entry {
+  border: 1px solid var(--border-thin);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px 14px;
+  cursor: default;
+}
+.codex-entry.is-focused {
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+.codex-entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.codex-entry-name {
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+.codex-entry-tag {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  flex: none;
+}
+.codex-entry-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.codex-entry-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.codex-entry-counter {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-thin);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--hud-good);
+}
+.codex-entry-counter .label {
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 10px;
+  margin-right: 6px;
+}
+
+.codex-close-row {
+  display: flex;
+  justify-content: center;
+  flex: none;
+}
+
+/* =================================================================================================
  * Accessibility: reduced flash / reduced motion
  *
  * `.reduce-flash` is applied to <body> by the settings system. Every animation, glow shadow and
@@ -1289,6 +1483,15 @@ button {
   .menu-root *,
   .draft-root *,
   .hangar-root * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* codex-root postdates the block above (a separate rule, not an edit to it) — same guarantee
+ * extended to the fourth overlay. */
+@media (prefers-reduced-motion: reduce) {
+  .codex-root * {
     animation: none !important;
     transition: none !important;
   }
