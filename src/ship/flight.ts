@@ -35,7 +35,6 @@ import type { InputState, PlayerState } from '../core/types';
 import { ARENA, PLAYER } from '../core/constants';
 import {
   FORWARD,
-  WORLD_UP,
   clamp,
   dampVec3,
   moveTowards,
@@ -54,25 +53,11 @@ const targetVelocity = /*#__PURE__*/ new THREE.Vector3();
  * them need to stay alive across the whole angular-motion section of `update`. */
 const deltaQuat = /*#__PURE__*/ new THREE.Quaternion();
 const bodyRateAxis = /*#__PURE__*/ new THREE.Vector3();
-const shipUp = /*#__PURE__*/ new THREE.Vector3();
-const desiredUp = /*#__PURE__*/ new THREE.Vector3();
-const projectedUp = /*#__PURE__*/ new THREE.Vector3();
-const rollCross = /*#__PURE__*/ new THREE.Vector3();
-const bankQuat = /*#__PURE__*/ new THREE.Quaternion();
+const trackUp = /*#__PURE__*/ new THREE.Vector3();
 const targetQuat = /*#__PURE__*/ new THREE.Quaternion();
 const trackLookMatrix = /*#__PURE__*/ new THREE.Matrix4();
 /** Fixed at the origin — `Matrix4.lookAt` takes eye/target as points, not a direction. */
 const trackEye = /*#__PURE__*/ new THREE.Vector3(0, 0, 0);
-
-/**
- * Seconds after the last meaningful pitch input during which auto-level stays suppressed.
- * A loop's apex briefly makes the ship's own "up" look wildly out of level relative to world
- * up — that is an artifact of pitching through the loop, not a real bank error, so auto-level
- * has to stay quiet until the pitching itself has stopped for a beat.
- */
-const AUTO_LEVEL_PITCH_SUPPRESSION = 1.5;
-/** Above this |forward·worldUp| the reference for "level" is too degenerate to use. */
-const NEAR_VERTICAL_DOT = 0.95;
 
 export interface FlightResult {
   /** Signed yaw rate this step, for the visual banking of wings and the camera lean. */
@@ -97,9 +82,6 @@ export class FlightModel {
 
   /** The ship's full orientation. Integrated in body axes — nothing rebuilds it from scalars. */
   private readonly orientation = new THREE.Quaternion();
-
-  /** Seconds remaining before auto-level is allowed to act again; see AUTO_LEVEL_PITCH_SUPPRESSION. */
-  private pitchSuppression = 0;
 
   /**
    * Advances one fixed simulation step.
@@ -156,50 +138,19 @@ export class FlightModel {
     player.angular.x = moveTowards(player.angular.x, desiredPitch, accel);
     player.angular.y = moveTowards(player.angular.y, desiredYaw, accel);
 
-    // Track how recently the player actually asked for pitch, so auto-level knows to stay out
-    // of the way through a loop (see AUTO_LEVEL_PITCH_SUPPRESSION).
-    this.pitchSuppression =
-      Math.abs(input.aimY) > 0.01 ? AUTO_LEVEL_PITCH_SUPPRESSION : Math.max(0, this.pitchSuppression - dt);
-
-    // Reference frame for the roll computation below, taken from *this* step's starting
-    // orientation — a one-step lag against the delta we are about to apply, which is immaterial
-    // at simulation dt.
-    forward.copy(FORWARD).applyQuaternion(this.orientation).normalize();
-    shipUp.set(0, 1, 0).applyQuaternion(this.orientation).normalize();
-    const forwardDotUp = forward.dot(WORLD_UP);
-    const nearVertical = Math.abs(forwardDotUp) > NEAR_VERTICAL_DOT;
-
     // --- Lock tracking assist -------------------------------------------------------------------
     const tracking = this.applyTrackingAssist(input, trackDir, trackStrength, turnRate, dt);
 
-    // --- Roll: manual, or gentle auto-level with a bank into the turn --------------------------
+    // --- Roll: manual only ---------------------------------------------------------------------
     const rollInput = input.roll;
-    const bankTarget = clamp(-player.angular.y / Math.max(0.001, def.turnRate), -1, 1) * PLAYER.maxBankAngle;
 
     if (Math.abs(rollInput) > 0.01) {
-      // Manual roll overrides levelling entirely, so barrel rolls are possible on demand.
       player.angular.z = rollInput * PLAYER.rollRate;
-    } else if (!nearVertical && this.pitchSuppression <= 0) {
-      // Desired "up": world up, projected into the plane perpendicular to the nose, then banked
-      // by bankTarget around the nose so a turn still reads as a bank rather than a flat skid.
-      desiredUp.copy(WORLD_UP).addScaledVector(forward, -forwardDotUp).normalize();
-      bankQuat.setFromAxisAngle(forward, bankTarget);
-      desiredUp.applyQuaternion(bankQuat);
-
-      // The ship's actual up, projected the same way.
-      projectedUp.copy(shipUp).addScaledVector(forward, -forward.dot(shipUp)).normalize();
-
-      // Signed angle from desiredUp to projectedUp, measured around the nose axis.
-      rollCross.copy(desiredUp).cross(projectedUp);
-      const error = Math.atan2(rollCross.dot(forward), desiredUp.dot(projectedUp));
-
-      // Divide by the auto-level time so the correction is a rate, not a spring constant, and
-      // clamp it to the manual roll rate so levelling never out-spins the player.
-      player.angular.z = clamp(error / PLAYER.autoLevelTime, -PLAYER.rollRate, PLAYER.rollRate);
     } else {
-      // Near vertical, or mid-loop: there is no trustworthy "level" to chase, so contribute
-      // nothing rather than guess. This is what stops auto-level from yanking the ship.
-      player.angular.z = 0;
+      // No auto-levelling. Space has no horizon to return to, and re-levelling is exactly what
+      // made sustained climbs and dives whip the view around. Roll simply bleeds off to zero,
+      // so whatever attitude the player flies into is the attitude they keep.
+      player.angular.z = moveTowards(player.angular.z, 0, PLAYER.angularAcceleration * dt);
     }
 
     // --- Integrate orientation in body axes -----------------------------------------------------
@@ -285,10 +236,13 @@ export class FlightModel {
   ): number {
     if (!trackDir || strength <= 0 || input.steering) return 0;
 
-    // Look-rotation toward the target, preserving world-up as the roll reference so tracking
-    // does not itself introduce any bank. Built straight off THREE.Matrix4.lookAt rather than
-    // composed by hand, so it is guaranteed a proper (determinant +1) rotation.
-    trackLookMatrix.lookAt(trackEye, trackDir, WORLD_UP);
+    // Look-rotation toward the target, using the ship's *own* up as the roll reference so the
+    // assist only ever swings the nose -- it must never roll the ship back toward a world
+    // horizon. Built straight off THREE.Matrix4.lookAt rather than composed by hand, so it is
+    // guaranteed a proper (determinant +1) rotation.
+    trackUp.set(0, 1, 0).applyQuaternion(this.orientation).normalize();
+    if (Math.abs(trackUp.dot(trackDir)) > 0.999) trackUp.set(1, 0, 0).applyQuaternion(this.orientation).normalize();
+    trackLookMatrix.lookAt(trackEye, trackDir, trackUp);
     targetQuat.setFromRotationMatrix(trackLookMatrix);
 
     const error = this.orientation.angleTo(targetQuat);
@@ -371,7 +325,6 @@ export class FlightModel {
 
   reset(): void {
     this.orientation.identity();
-    this.pitchSuppression = 0;
     this.result.yawRate = 0;
     this.result.pitchRate = 0;
     this.result.speedFraction = 0;
