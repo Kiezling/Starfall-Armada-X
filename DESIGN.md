@@ -85,12 +85,17 @@ releasing the keys holds the current heading. (The original mouse model had no r
 with no pointer, the axes sat wherever the cursor last happened to be, and the ship pitched
 continuously until it flipped. That is the bug this layout exists to make impossible.)
 
-**No inversion, structurally.** Orientation is stored as three scalars — heading, pitch, bank —
-and rebuilt into a quaternion every step rather than integrated onto the previous one. Pitch is
-hard-clamped at ±78°, so the nose cannot carry over the top; bank always has a true level to
-return to, because it is measured rather than accumulated. Roll auto-levels over ~1.2 s
-whenever manual roll is not held, and manual roll still has full ±180° authority on top of the
-level frame, so barrel rolls work — they simply always unwind.
+**Unlimited pitch, with an attitude reference.** Orientation is integrated as a quaternion in
+body axes, so the nose can loop all the way over the top and keep going — there is no clamp and
+no sudden stop mid-pull. The earlier ±78° clamp traded that away for disorientation-proofing,
+and in play it did the opposite: the nose stopping without warning is exactly what made "which
+way am I facing?" unanswerable. Orientation confidence now comes from information instead of
+restriction — the HUD carries a true-horizon ladder, world zenith/nadir pips, and a
+heading/pitch readout, all derived from world axes so they stay honest inverted. Roll still
+auto-levels whenever manual roll is not held and the ship is not mid-loop, so the ship settles
+level on its own without ever fighting the player for the nose.
+
+Pitch defaults to stick-style (Up = nose down); **Settings → Gameplay → Invert Y** flips it.
 
 **Hold lock** is the keyboard's answer to a mouse's aiming resolution. With a target locked,
 the ship converges its nose on the *intercept point* (where the target will be when the shot

@@ -26,6 +26,7 @@ import {
   type HullId,
   type MetaState,
   type PrimaryWeaponId,
+  type InputAction,
   type RunState,
   type SecondaryWeaponId,
   type Settings,
@@ -927,8 +928,13 @@ export class Game {
         else this.showTitle();
       },
       (next) => this.applySettings(next),
-      () => {
-        /* Rebind capture is driven by InputManager.beginRebind via the menu's own handler. */
+      (action) => {
+        // Hand the capture to the input manager and, when it resolves, persist the new binding
+        // and rebuild the settings rows so the button stops saying "PRESS A KEY".
+        this.input.beginRebind(action as InputAction, () => {
+          this.applySettings(this.settings);
+          this.menus.refreshSettings(this.settings);
+        });
       },
     );
   }

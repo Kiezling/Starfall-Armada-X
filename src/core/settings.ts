@@ -72,6 +72,13 @@ export const ALT_KEYBINDS: Partial<Record<InputAction, string>> = {
   pause: 'KeyP',
 };
 
+/**
+ * Bumped whenever a *control-scheme* default changes in a way that must reach players who
+ * already have a saved settings blob. Cosmetic or audio defaults do not need a bump.
+ * 2 — pitch inverted by default (Up = nose down) alongside the removal of the pitch limit.
+ */
+const SETTINGS_SCHEMA = 2;
+
 /** The only action names a keybind entry may legally refer to. */
 const KNOWN_ACTIONS = Object.keys(DEFAULT_KEYBINDS) as InputAction[];
 
@@ -93,7 +100,10 @@ export function createDefaultSettings(): Settings {
     aimAssist: AimAssist.Strong,
     difficulty: Difficulty.Pilot,
 
-    invertY: false,
+    // Default to stick-style pitch: Up/I pulls the nose down, Down/K pulls it up. This is what
+    // the arrow cluster reads as once the pitch limit is gone and the ship can loop; the
+    // "Invert Y" toggle in Settings → Gameplay flips it back for players who prefer camera-style.
+    invertY: true,
     mouseSensitivity: 1,
     keybinds: { ...DEFAULT_KEYBINDS },
 
@@ -153,6 +163,7 @@ export function loadSettings(): Settings {
   }
   if (parsed === null || typeof parsed !== 'object') return defaults;
   const rec = parsed as Record<string, unknown>;
+  const storedSchema = readNumber(rec.schema, 1);
 
   return {
     masterVolume: clamp01(readNumber(rec.masterVolume, defaults.masterVolume)),
@@ -170,7 +181,10 @@ export function loadSettings(): Settings {
     aimAssist: isEnumValue(AimAssist, rec.aimAssist) ? (rec.aimAssist as AimAssist) : defaults.aimAssist,
     difficulty: isEnumValue(Difficulty, rec.difficulty) ? (rec.difficulty as Difficulty) : defaults.difficulty,
 
-    invertY: readBool(rec.invertY, defaults.invertY),
+    // Control-scheme fields are re-defaulted when the stored schema predates a scheme change,
+    // otherwise a player who has ever played keeps the old pitch direction forever and the new
+    // default never reaches them. Everything else (volumes, accessibility) is preserved.
+    invertY: storedSchema === SETTINGS_SCHEMA ? readBool(rec.invertY, defaults.invertY) : defaults.invertY,
     mouseSensitivity: clamp(
       readNumber(rec.mouseSensitivity, defaults.mouseSensitivity),
       MOUSE_SENSITIVITY_MIN,
@@ -185,7 +199,7 @@ export function loadSettings(): Settings {
 /** localStorage.setItem can throw (private browsing, quota, disabled storage) — never fatal. */
 export function saveSettings(s: Settings): void {
   try {
-    localStorage.setItem(STORAGE.settings, JSON.stringify(s));
+    localStorage.setItem(STORAGE.settings, JSON.stringify({ ...s, schema: SETTINGS_SCHEMA }));
   } catch {
     // Settings simply won't persist this session; gameplay is unaffected.
   }

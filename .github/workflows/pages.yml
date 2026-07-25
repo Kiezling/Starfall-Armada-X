@@ -10,7 +10,9 @@ on:
     # actually makes the game deployable before the merge.
     branches:
       - main
-      - claude/threejs-space-fighter-game-sxus1u
+      # Feature branches are listed here so the live site can be play-tested before the merge;
+      # whichever branch pushes last owns the deployment.
+      - claude/starfall-camera-aiming-llxgut
   workflow_dispatch:
 
 permissions:

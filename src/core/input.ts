@@ -138,6 +138,7 @@ export class InputManager implements InputState {
 
   private device: Device = Device.Keyboard;
   private rebindTarget: InputAction | null = null;
+  private rebindDone: (() => void) | null = null;
 
   constructor(canvas: HTMLElement, settings: Settings) {
     this.canvas = canvas;
@@ -214,8 +215,26 @@ export class InputManager implements InputState {
     if (this.pointerLocked) document.exitPointerLock();
   }
 
-  beginRebind(action: InputAction): void {
+  /**
+   * Starts listening for the next key and binds it to `action`.
+   *
+   * `onDone` fires once the capture resolves — including when Escape cancels it — and is what
+   * lets the caller persist the new binding and drop the menu's "PRESS A KEY" state. Without
+   * it the row would sit listening forever, since nothing else observes the capture.
+   */
+  beginRebind(action: InputAction, onDone?: () => void): void {
     this.rebindTarget = action;
+    this.rebindDone = onDone ?? null;
+  }
+
+  private finishRebind(): void {
+    this.rebindTarget = null;
+    const done = this.rebindDone;
+    this.rebindDone = null;
+    // The captured key was never routed into the action tables, so nothing is held; clearing
+    // the raw set keeps a key pressed during capture from looking held once play resumes.
+    this.keyDown.clear();
+    if (done) done();
   }
 
   /** Advances analog smoothing. Called once per rendered frame with an unscaled delta. */
@@ -367,10 +386,12 @@ export class InputManager implements InputState {
     if (PREVENT_DEFAULT_CODES.has(e.code)) e.preventDefault();
 
     if (this.rebindTarget) {
+      // Key repeat must not re-enter the capture after it has already resolved.
+      if (e.repeat) return;
       // Escape backs out of a rebind instead of binding itself, matching the common remap-UI
       // convention — otherwise a player trying to cancel would silently rebind onto pause.
       if (e.code !== 'Escape') this.settings.keybinds[this.rebindTarget] = e.code;
-      this.rebindTarget = null;
+      this.finishRebind();
       return;
     }
 
