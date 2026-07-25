@@ -70,8 +70,12 @@ const LEAD_PIP_TIME = 0.28;
 const ATTITUDE_SPAN = 1.05;
 const ATTITUDE_SEGMENTS = 24;
 const ATTITUDE_FONT = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-/** Pixels below screen centre for the heading/pitch readout. */
-const ATTITUDE_READOUT_OFFSET = 92;
+/**
+ * Pixels below screen centre for the heading/pitch readout. Clear of the ship model, which the
+ * chase camera parks a little below centre — text over the hull is unreadable against a moving
+ * mesh and hides the very thing the player is watching.
+ */
+const ATTITUDE_READOUT_OFFSET = 152;
 
 /** Nose-crosshair geometry: pixels from centre to the start of a tick, and the tick's length. */
 const CROSSHAIR_GAP = 9;

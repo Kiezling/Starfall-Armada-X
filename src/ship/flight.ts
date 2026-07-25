@@ -397,8 +397,12 @@ export function lookRotation(out: THREE.Quaternion, dir: THREE.Vector3, upHint: 
   // cross product to zero and produce a NaN quaternion.
   const parallel = Math.abs(lookForward.dot(upHint)) > 0.999;
   lookUpHint.copy(parallel ? FORWARD : upHint);
-  lookRight.copy(lookUpHint).cross(lookForward).normalize();
-  lookUp.copy(lookForward).cross(lookRight).normalize();
+  // Handedness matters: with -Z forward, right is forward × up and up is right × forward. The
+  // reverse order builds a determinant -1 basis — a reflection, not a rotation — and
+  // `setFromRotationMatrix` turns that into a non-unit, invalid quaternion. Every enemy and
+  // boss that aims through this helper inherits that, so the order here is load-bearing.
+  lookRight.copy(lookForward).cross(lookUpHint).normalize();
+  lookUp.copy(lookRight).cross(lookForward).normalize();
 
   // Three.js convention: local -Z is forward, so the third basis column is -forward.
   lookBack.copy(lookForward).multiplyScalar(-1);

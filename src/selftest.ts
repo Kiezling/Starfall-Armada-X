@@ -28,7 +28,7 @@ import { SpatialGrid } from './core/spatial';
 import { Pool } from './core/pool';
 import { GameClock } from './core/time';
 import * as THREE from 'three';
-import { FlightModel } from './ship/flight';
+import { FlightModel, lookRotation } from './ship/flight';
 import { createPlayerState } from './ship/player';
 import type { InputAction, InputState } from './core/types';
 import { TargetingSystem } from './combat/targeting';
@@ -515,7 +515,9 @@ function testFlightLoopsWithoutInverting(): void {
   for (let i = 0; i < 40; i++) flight.update(player, input, STEP, 520, 1, null, 0);
   input.roll = 0;
 
-  for (let i = 0; i < 4 * 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+  // Auto-level converges exponentially with a ~1.2s time constant (PLAYER.autoLevelTime), so
+  // give it several time constants to actually settle rather than catching it mid-decay.
+  for (let i = 0; i < 8 * 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
 
   flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
   flightForward.set(0, 0, -1).applyQuaternion(player.quaternion);
@@ -566,6 +568,42 @@ function testFlightHoldsHeadingWhenReleased(): void {
     drift < 0.01,
     `${((drift * 180) / Math.PI).toFixed(3)}° of drift over 5s`,
   );
+}
+
+/**
+ * `lookRotation` must produce a genuine rotation, not a reflection.
+ *
+ * It builds its basis by hand, and building it in the wrong cross-product order yields a
+ * determinant of -1 — which `setFromRotationMatrix` happily converts into a non-unit
+ * quaternion. Every enemy and boss aims through this helper, so a silent reflection there is a
+ * whole-roster aiming bug that nothing else would catch.
+ */
+function testLookRotationIsARotation(): void {
+  const up = new THREE.Vector3(0, 1, 0);
+  const q = new THREE.Quaternion();
+  const dirs = [
+    new THREE.Vector3(0, 0, -1),
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(0.3, 0.7, -0.4).normalize(),
+    new THREE.Vector3(-0.5, -0.2, 0.84).normalize(),
+    new THREE.Vector3(0, 1, 0), // parallel to the up hint: the degenerate guard's path
+  ];
+
+  let worstNorm = 0;
+  let worstAim = 0;
+  const aimed = new THREE.Vector3();
+  for (const dir of dirs) {
+    lookRotation(q, dir, up);
+    worstNorm = Math.max(worstNorm, Math.abs(q.length() - 1));
+    if (dir.y < 0.999) {
+      // The degenerate case may pick any roll, but every other direction must aim down `dir`.
+      aimed.set(0, 0, -1).applyQuaternion(q);
+      worstAim = Math.max(worstAim, aimed.distanceTo(dir));
+    }
+  }
+
+  check('lookRotation returns unit quaternions', worstNorm < 1e-6, `worst |q|-1 = ${worstNorm.toExponential(2)}`);
+  check('lookRotation aims down the requested direction', worstAim < 1e-6, `worst aim error = ${worstAim.toExponential(2)}`);
 }
 
 /**
@@ -816,6 +854,7 @@ export function runSelfTest(): TestResult[] {
   testRngDeterminism();
   testFlightLoopsWithoutInverting();
   testFlightHoldsHeadingWhenReleased();
+  testLookRotationIsARotation();
   testLockAssistConvergesAndYields();
   testLeadTargetPrediction();
   testGimbalAssist();
