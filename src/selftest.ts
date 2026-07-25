@@ -31,6 +31,7 @@ import * as THREE from 'three';
 import { FlightModel } from './ship/flight';
 import { createPlayerState } from './ship/player';
 import type { InputAction, InputState } from './core/types';
+import { TargetingSystem } from './combat/targeting';
 
 export interface TestResult {
   name: string;
@@ -579,6 +580,153 @@ function testLockAssistConvergesAndYields(): void {
   );
 }
 
+/**
+ * Lead calculation must account for target velocity. A target crossing perpendicular to the
+ * ship should produce a lead point ahead of the target's current position.
+ */
+function testLeadTargetPrediction(): void {
+  const targeting = new TargetingSystem();
+
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+
+  // Mock EnemyQuery interface.
+  const enemyPos = new THREE.Vector3(100, 0, 0);
+  const enemyVel = new THREE.Vector3(0, 50, 0);
+  const mockEnemy = { id: 0, position: enemyPos, velocity: enemyVel, active: true, radius: 5 };
+  const mockEnemyQuery = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy,
+    getById: (id: number) => (id === 0 ? mockEnemy : null),
+  } as any;
+
+  // Cache player state in targeting system.
+  targeting.update(player, mockEnemyQuery, 0, null as any, { aimAssist: 0 } as any, 0);
+
+  // Lock onto the mock enemy.
+  (targeting as any).locked = 0;
+
+  const leadPoint = new THREE.Vector3();
+  const projectileSpeed = 300;
+
+  const success = targeting.getLeadPoint(leadPoint, projectileSpeed, mockEnemyQuery);
+  check(
+    'lead point calculation succeeds with locked target',
+    success,
+    'getLeadPoint returned false',
+  );
+
+  if (success) {
+    // Lead point should be ahead of the target, not at its current position.
+    const isAhead = leadPoint.y > enemyPos.y + 1;
+    check(
+      'lead point is ahead of crossing target',
+      isAhead,
+      `lead ${leadPoint.toArray().map((v) => v.toFixed(1)).join(',')} vs target ${enemyPos.toArray().map((v) => v.toFixed(1)).join(',')}`,
+    );
+
+    // Time-to-intercept: distance from player to lead point divided by projectile speed.
+    const distToLead = leadPoint.clone().sub(player.position).length();
+    const timeToLead = distToLead / projectileSpeed;
+    // Target should be at the lead point at that time.
+    const targetAtTime = enemyPos.clone().addScaledVector(enemyVel, timeToLead);
+    const convergence = targetAtTime.clone().sub(leadPoint).length();
+    check(
+      'projectile fired at lead point arrives within tolerance',
+      convergence < 0.5,
+      `convergence error ${convergence.toFixed(3)} (target: ${targetAtTime.toArray().map((v) => v.toFixed(1)).join(',')}, lead: ${leadPoint.toArray().map((v) => v.toFixed(1)).join(',')})`,
+    );
+  }
+}
+
+/**
+ * Gimbal assist should snap locked targets' aim to the lead point when within range, and
+ * apply soft-edge falloff outside the primary range.
+ */
+function testGimbalAssist(): void {
+  const targeting = new TargetingSystem();
+
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+
+  // Test case 1: target 10° off boresight (within gimbal range).
+  const angle10 = 10 * (Math.PI / 180);
+  const enemyPos10 = new THREE.Vector3(
+    100 * Math.sin(angle10),
+    0,
+    -100 * Math.cos(angle10),
+  );
+  const enemyVel10 = new THREE.Vector3(0, 100, 0); // Crossing velocity.
+
+  const mockEnemy10 = { id: 0, position: enemyPos10, velocity: enemyVel10, active: true, radius: 5 };
+  const mockEnemyQuery10 = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy10,
+    getById: (id: number) => (id === 0 ? mockEnemy10 : null),
+  } as any;
+
+  const settings = { aimAssist: 2 } as any; // AimAssist.Strong = 2
+  targeting.update(player, mockEnemyQuery10, 0, null as any, settings, 0);
+  (targeting as any).locked = 0;
+
+  const aimDir10 = new THREE.Vector3(0, 0, -1); // Facing forward.
+  targeting.applyAimAssist(aimDir10, player.position, mockEnemyQuery10, 0, settings);
+
+  const leadPoint10 = new THREE.Vector3();
+  targeting.getLeadPoint(leadPoint10, 300, mockEnemyQuery10);
+  const expectedDir10 = leadPoint10.clone().sub(player.position).normalize();
+  const alignment10 = aimDir10.dot(expectedDir10);
+
+  check(
+    'gimbal at 10° aligns with lead point',
+    alignment10 > 0.93,
+    `alignment=${alignment10.toFixed(3)} (should be close to 1.0)`,
+  );
+
+  // Test case 2: target 25° off boresight (outside gimbal range, should be untouched).
+  const angle25 = 25 * (Math.PI / 180);
+  const enemyPos25 = new THREE.Vector3(
+    100 * Math.sin(angle25),
+    0,
+    -100 * Math.cos(angle25),
+  );
+  const enemyVel25 = new THREE.Vector3(0, 50, 0);
+
+  const mockEnemy25 = { id: 0, position: enemyPos25, velocity: enemyVel25, active: true, radius: 5 };
+  const mockEnemyQuery25 = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy25,
+    getById: (id: number) => (id === 0 ? mockEnemy25 : null),
+  } as any;
+
+  const targeting25 = new TargetingSystem();
+  targeting25.update(player, mockEnemyQuery25, 0, null as any, settings, 0);
+  (targeting25 as any).locked = 0;
+
+  const aimDir25 = new THREE.Vector3(0, 0, -1);
+  const aimDirBefore = aimDir25.clone();
+  targeting25.applyAimAssist(aimDir25, player.position, mockEnemyQuery25, 0, settings);
+
+  const unchanged = Math.abs(aimDir25.dot(aimDirBefore) - 1.0) < 0.02;
+  check(
+    'gimbal at 25° leaves aim direction unchanged',
+    unchanged,
+    `dot product ${aimDir25.dot(aimDirBefore).toFixed(3)} (should be ~1.0)`,
+  );
+}
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -595,5 +743,7 @@ export function runSelfTest(): TestResult[] {
   testFlightNeverInverts();
   testFlightHoldsHeadingWhenReleased();
   testLockAssistConvergesAndYields();
+  testLeadTargetPrediction();
+  testGimbalAssist();
   return results;
 }

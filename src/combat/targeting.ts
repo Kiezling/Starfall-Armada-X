@@ -10,12 +10,17 @@
  * 2. **Aim assist bends, never snaps, and never fires.** It nudges the shot direction by at
  *    most a couple of degrees toward a target already near the crosshair. Off means genuinely
  *    off — no hidden magnetism.
+ *
+ * 3. **Gimbal assist is a hard mount within its traverse range.** Real fighters use gimballed
+ *    mounts with a traverse envelope. When a locked target's intercept point falls inside the
+ *    gimbal's angular range, the guns physically traverse to lock on, firing at the intercept
+ *    point directly. This teaches leading while keeping close shots reliable.
  */
 
 import * as THREE from 'three';
 import { AimAssist, type PlayerState, type Settings } from '../core/types';
-import { FORWARD, leadTarget, scratchVec3A, scratchVec3B, scratchVec3C } from '../core/math';
-import { LIMITS } from '../core/constants';
+import { FORWARD, leadTarget, scratchVec3A, scratchVec3B, scratchVec3D, scratchVec3E } from '../core/math';
+import { LIMITS, WEAPONS } from '../core/constants';
 import type { EnemyQuery } from './projectiles';
 
 /** Maximum lock range. Beyond this the HUD would be guessing anyway. */
@@ -41,11 +46,17 @@ const toTarget = /*#__PURE__*/ new THREE.Vector3();
 const bestDir = /*#__PURE__*/ new THREE.Vector3();
 const axis = /*#__PURE__*/ new THREE.Vector3();
 const rotation = /*#__PURE__*/ new THREE.Quaternion();
+const gimbalAxis = /*#__PURE__*/ new THREE.Vector3();
+const gimbalQuat = /*#__PURE__*/ new THREE.Quaternion();
 
 export class TargetingSystem {
   private locked = -1;
   private lockTimer = 0;
   private readonly results = new Int32Array(LIMITS.maxQueryResults);
+  /** Cached player position from last update(), for lead point calculations. */
+  private readonly cachedPlayerPos = /*#__PURE__*/ new THREE.Vector3();
+  /** Cached player velocity from last update(), for lead point calculations. */
+  private readonly cachedPlayerVel = /*#__PURE__*/ new THREE.Vector3();
 
   get lockedId(): number {
     return this.locked;
@@ -65,6 +76,10 @@ export class TargetingSystem {
     dt: number,
   ): void {
     this.lockTimer += dt;
+
+    // Cache player position and velocity for lead calculations.
+    this.cachedPlayerPos.copy(player.position);
+    this.cachedPlayerVel.copy(player.velocity);
 
     forward.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
 
@@ -170,25 +185,43 @@ export class TargetingSystem {
   /**
    * Writes the point to aim at in order to hit the locked target with a projectile of the given
    * speed. This is what the HUD's lead pip renders — it teaches leading rather than doing it.
+   *
+   * @param out Output vector for the lead point
+   * @param projectileSpeed Projectile speed in world units/second
+   * @param enemies Enemy query interface
+   * @param shooterPos Optional shooter position (defaults to cached player position)
    */
-  getLeadPoint(out: THREE.Vector3, projectileSpeed: number, enemies: EnemyQuery): boolean {
+  getLeadPoint(
+    out: THREE.Vector3,
+    projectileSpeed: number,
+    enemies: EnemyQuery,
+    shooterPos?: THREE.Vector3,
+  ): boolean {
     if (this.locked < 0) return false;
     const target = enemies.getById(this.locked);
     if (!target || !target.active) return false;
 
+    // Use cached values if not provided (for compatibility with existing call sites).
+    const actualShooterPos = shooterPos ?? this.cachedPlayerPos;
+    // Projectiles don't inherit the ship's velocity (see weapons.ts:213), so we use the
+    // target's absolute velocity in the intercept calculation.
+
     scratchVec3A.copy(target.position);
     scratchVec3B.copy(target.velocity);
-    scratchVec3C.set(0, 0, 0);
-    leadTarget(out, scratchVec3C, scratchVec3A, scratchVec3B, projectileSpeed);
+    leadTarget(out, actualShooterPos, scratchVec3A, scratchVec3B, projectileSpeed);
     return true;
   }
 
   /**
-   * Bends `aimDir` toward the nearest target inside the assist cone. Mutates in place.
+   * Applies gun gimbal and aim assist to `aimDir`. Mutates in place.
    *
-   * The bend is capped at the setting's maximum angle and scaled by how close the target
-   * already is to the crosshair, so it feels like the shot is settling rather than being
-   * dragged. It never exceeds the cap, so a target 20° off is never hit for free.
+   * Gimbal: When a locked target's intercept point falls within the gimbal range (15° half-angle,
+   * soft edge from 12°), the guns physically traverse to lock on, snapping the shot direction to
+   * the intercept. This applies only to the locked target when assist is enabled.
+   *
+   * Assist: Bends `aimDir` toward the nearest non-locked target inside the assist cone. The bend
+   * is capped at the setting's maximum angle and scaled by proximity, so it feels like settling
+   * rather than dragging. Never exceeds the cap.
    */
   applyAimAssist(
     aimDir: THREE.Vector3,
@@ -198,6 +231,55 @@ export class TargetingSystem {
     settings: Settings,
   ): void {
     const maxBend = AIM_ASSIST_RADIANS[settings.aimAssist] ?? 0;
+
+    // Try gimbal first: if we have a lock and assist is enabled, check if the lead point
+    // falls within the gimbal's traverse range.
+    if (maxBend > 0 && this.locked >= 0) {
+      const target = enemies.getById(this.locked);
+      if (target && target.active) {
+        // Get the lead point for the locked target.
+        if (this.getLeadPoint(scratchVec3D, 420, enemies)) { // Use a typical projectile speed
+          // Direction from ship to lead point.
+          scratchVec3E.copy(scratchVec3D).sub(origin);
+          const leadDist = scratchVec3E.length();
+          if (leadDist > 1e-3) {
+            scratchVec3E.multiplyScalar(1 / leadDist);
+
+            // Check if lead point is within gimbal range.
+            const angle = Math.acos(Math.max(-1, Math.min(1, aimDir.dot(scratchVec3E))));
+
+            // Soft edge: full traverse inside 12°, linear falloff to zero at 15°.
+            if (angle <= WEAPONS.gimbalHalfAngle) {
+              let traverse = 1.0;
+              if (angle > WEAPONS.gimbalSoftStart) {
+                // Linear interpolation from 1.0 at 12° to 0.0 at 15°.
+                traverse = 1.0 - (angle - WEAPONS.gimbalSoftStart) / (WEAPONS.gimbalHalfAngle - WEAPONS.gimbalSoftStart);
+              }
+
+              if (traverse > 1e-4) {
+                // Traverse toward the lead direction: at full strength, snap all the way;
+                // at reduced strength, lerp partway.
+                if (angle < 1e-5) {
+                  // Already aligned, just use the lead direction.
+                  aimDir.copy(scratchVec3E);
+                } else {
+                  // Rotate proportionally toward the lead direction.
+                  gimbalAxis.copy(aimDir).cross(scratchVec3E);
+                  if (gimbalAxis.lengthSq() > 1e-8) {
+                    gimbalAxis.normalize();
+                    gimbalQuat.setFromAxisAngle(gimbalAxis, angle * traverse);
+                    aimDir.applyQuaternion(gimbalQuat).normalize();
+                  }
+                }
+              }
+              return; // Gimbal overrides regular assist.
+            }
+          }
+        }
+      }
+    }
+
+    // Regular aim assist: bend toward non-locked targets inside the assist cone.
     if (maxBend <= 0) return;
 
     // Only consider targets already close to the crosshair — assist should reward near-misses,

@@ -239,6 +239,23 @@ export const RENDER = {
   particleScale: [1.0, 0.75, 0.45, 0.2] as const,
 } as const;
 
+/* Weapons and gimbals ----------------------------------------------------------------------- */
+
+export const WEAPONS = {
+  /**
+   * Gun gimbal half-angle in radians (15°). When a locked target's lead point falls within
+   * this cone, the guns physically traverse to track the intercept point. Soft edge: full
+   * traverse inside 12°, linear falloff to zero traverse at 15°. This teaches leading while
+   * keeping close shots reliable.
+   */
+  gimbalHalfAngle: 0.262,
+  /**
+   * Soft-edge start for gimbal traverse, in radians (12°). Below this angle, the gimbal
+   * applies at full strength. Between 12° and 15°, it fades linearly to zero.
+   */
+  gimbalSoftStart: 0.2094,
+} as const;
+
 /* Storage keys ------------------------------------------------------------------------------ */
 
 export const STORAGE = {

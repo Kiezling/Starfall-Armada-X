@@ -201,6 +201,29 @@ export function paletteName(mode: ColorblindMode): string {
   return (PALETTES[mode] ?? DEFAULT_PALETTE).name;
 }
 
+/* Depth cueing ---------------------------------------------------------------------------------
+ * A single shared fog colour/density so every system that needs atmospheric depth cueing (the
+ * renderer's `scene.fog`, arena dressing shaders that bypass automatic fog) agrees with each
+ * other and with the active palette, instead of each guessing its own dim space colour.
+ */
+
+/** FogExp2 density. Tuned so combat ranges (well under ARENA.radius) stay essentially unfogged
+ * and only distant dressing/backdrop-adjacent geometry genuinely recedes. */
+export const DEPTH_FOG_DENSITY = 1 / 1300;
+
+const fogColorScratch = /*#__PURE__*/ new THREE.Color();
+
+/**
+ * The ambient depth-fog colour, derived from the active palette's nebula pair so a sector or
+ * colourblind-mode change is picked up automatically. Returns a shared scratch instance — copy
+ * it into your own uniform/property immediately, never retain the reference.
+ */
+export function depthFogColor(): THREE.Color {
+  const p = active;
+  fogColorScratch.copy(color(p.nebulaB)).lerp(color(p.nebulaA), 0.35).multiplyScalar(0.3);
+  return fogColorScratch;
+}
+
 /* Helpers ------------------------------------------------------------------------------------ */
 
 const colorCache = new Map<number, THREE.Color>();
