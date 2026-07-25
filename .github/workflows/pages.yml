@@ -9,10 +9,11 @@ on:
     # trigger runs the workflow from the pushed branch, so listing the branches here is what
     # actually makes the game deployable before the merge.
     branches:
+      # Only main. The `github-pages` environment restricts deployments to the default branch,
+      # so a feature-branch push builds and tests fine and then fails at the deploy gate — a red
+      # run that never had any way to publish. Listing extra branches here cannot change that;
+      # only the environment's allowed-branches setting can.
       - main
-      # Feature branches are listed here so the live site can be play-tested before the merge;
-      # whichever branch pushes last owns the deployment.
-      - claude/starfall-camera-aiming-llxgut
   workflow_dispatch:
 
 permissions:
