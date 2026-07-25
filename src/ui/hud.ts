@@ -13,7 +13,7 @@
  */
 
 import * as THREE from 'three';
-import { ARENA } from '../core/constants';
+import { ARENA, PLAYER } from '../core/constants';
 import { palette, cssColor } from '../render/palette';
 
 export interface HudViewModel {
@@ -188,6 +188,8 @@ export class Hud {
    * locked target's own frame-to-frame screen motion — a legible approximation that needs no
    * extra data from the caller. */
   private prevLockId = -1;
+  /** World-space point on the ship's forward ray that the nose crosshair is drawn at. */
+  private readonly noseWorldPos = new THREE.Vector3();
   private prevLockScreenX = 0;
   private prevLockScreenY = 0;
   private prevLockTime = 0;
@@ -432,6 +434,14 @@ export class Hud {
     this.scratchInvQuat.copy(playerQuat).invert();
     camera.getWorldDirection(this.scratchCamForward);
 
+    // The point the guns are pointing at, one reticle-distance down the nose. Projected by
+    // drawOverlay below; kept here because this is where the player's transform is in hand.
+    this.noseWorldPos
+      .set(0, 0, -1)
+      .applyQuaternion(playerQuat)
+      .multiplyScalar(PLAYER.reticleDistance)
+      .add(playerPos);
+
     let lockedFound = false;
     let arrowsUsed = 0;
 
@@ -665,10 +675,28 @@ export class Hud {
     ctx.clearRect(0, 0, w, h);
 
     const p = palette();
-    const cx = w * 0.5;
-    const cy = h * 0.5;
 
     // --- Nose crosshair ---------------------------------------------------------------------
+    // Projected along the ship's forward ray, *not* pinned to the viewport centre. The chase
+    // camera sits above and behind the ship and looks at a point ahead of it, then lags and
+    // shakes on top of that — so screen centre is not where the guns point, and a fixed
+    // crosshair would quietly lie about the aim line in ordinary level flight. Since this is
+    // now the primary aiming reference for a keyboard player, it has to be projected through
+    // the live camera the same way the lock reticle is.
+    this.scratchToTarget.copy(this.noseWorldPos).sub(camera.position);
+    // Behind the camera, `project` mirrors the point to a plausible-looking but wrong place on
+    // screen. The chase camera never gets there in normal flight, but the death cam orbits, so
+    // drop the crosshair rather than draw a confidently misplaced one.
+    const noseVisible = this.scratchToTarget.dot(this.scratchCamForward) > 0;
+    this.scratchNdc.copy(this.noseWorldPos).project(camera);
+    const cx = (this.scratchNdc.x * 0.5 + 0.5) * w;
+    const cy = (1 - (this.scratchNdc.y * 0.5 + 0.5)) * h;
+
+    if (!noseVisible) {
+      this.prevLockId = -1;
+      return;
+    }
+
     // Four ticks around a gap, plus a centre dot. The gap keeps the exact aim point unobscured;
     // the dot gives it a precise centre to read against a target.
     ctx.strokeStyle = cssColor(p.hudPrimary);

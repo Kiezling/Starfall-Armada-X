@@ -1550,3 +1550,18 @@ button {
 .menu-controls-label {
   color: var(--text-dim);
 }
+
+/* On a short viewport the eleven rows push past the panel's max-height. The panel scrolls, but
+   arrow keys are already claimed by menu focus navigation and there is no pointer to scroll
+   with — so on a keyboard-only game the card has to *fit*, not scroll. Two key/label pairs per
+   row halves its height and keeps every binding on screen. */
+@media (max-height: 860px) {
+  .menu-controls-grid {
+    grid-template-columns: max-content max-content max-content max-content;
+    gap: 4px 14px;
+  }
+  .menu-controls {
+    margin-top: 18px;
+    padding-top: 14px;
+  }
+}

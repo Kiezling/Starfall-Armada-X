@@ -589,7 +589,11 @@ export class Game {
    */
   private resolveTrackDirection(player: PlayerState): THREE.Vector3 | null {
     if (this.targeting.lockedId < 0) return null;
-    const speed = getWeapon(player.primary).projectileSpeed;
+    // The augment multiplier has to be in here: weapons launch at `projectileSpeed *
+    // projectileSpeedMult`, so solving the intercept from the bare definition speed would lead
+    // crossing targets by the wrong amount — and the error would grow with every stack of
+    // Accelerator Coils, which is the upgrade meant to make leading *easier*.
+    const speed = getWeapon(player.primary).projectileSpeed * player.stats.projectileSpeedMult;
     // Beams and other hitscan weapons report zero speed; aim them straight at the target.
     const leadSpeed = speed > 0 ? speed : 1e6;
     if (!this.targeting.getLeadPoint(trackPoint, leadSpeed, this.enemies)) return null;

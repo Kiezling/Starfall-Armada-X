@@ -73,7 +73,9 @@ const GAMEPAD_TRIGGER_THRESHOLD = 0.25;
 
 /** W3C Standard Gamepad button indices used by this mapping. */
 const GP_BUTTON_A = 0;
+const GP_BUTTON_B = 1;
 const GP_BUTTON_X = 2;
+const GP_BUTTON_Y = 3;
 const GP_BUTTON_LB = 4;
 const GP_BUTTON_RB = 5;
 const GP_BUTTON_LT = 6;
@@ -393,8 +395,13 @@ export class InputManager implements InputState {
       if (!this.matchesBinding(action, e.code)) continue;
       const primary = this.settings.keybinds[action];
       const alt = ALT_KEYBINDS[action];
-      const stillHeld = (primary !== e.code && this.keyDown.has(primary)) || (alt !== undefined && alt !== e.code && this.keyDown.has(alt));
-      if (!stillHeld) this.actionKeyDown[action] = false;
+      // Each candidate has to pass matchesBinding in its own right. Testing only `keyDown`
+      // would count an alternate that a remap has since disabled for this action — it never
+      // set the action down, so letting it hold the action down means releasing the primary
+      // leaves the action stuck on until the window blurs.
+      const heldBy = (code: string | undefined): boolean =>
+        code !== undefined && code !== e.code && this.keyDown.has(code) && this.matchesBinding(action, code);
+      if (!heldBy(primary) && !heldBy(alt)) this.actionKeyDown[action] = false;
     }
   };
 
@@ -488,6 +495,11 @@ export class InputManager implements InputState {
     this.setGamepadAction('boost', buttons[GP_BUTTON_A]?.pressed ?? false);
     this.setGamepadAction('drift', buttons[GP_BUTTON_LB]?.pressed ?? false);
     this.setGamepadAction('cycleTarget', buttons[GP_BUTTON_RB]?.pressed ?? false);
+    // Hard lock sits under the thumb next to cycle-target, mirroring the keyboard's
+    // Tab-then-hold pairing. Both are required verbs now, so a pad without them is not
+    // actually "full gamepad support".
+    this.setGamepadAction('lockTarget', buttons[GP_BUTTON_B]?.pressed ?? false);
+    this.setGamepadAction('swapWeapon', buttons[GP_BUTTON_Y]?.pressed ?? false);
     this.setGamepadAction('reroll', buttons[GP_BUTTON_X]?.pressed ?? false);
     this.setGamepadAction('pause', buttons[GP_BUTTON_START]?.pressed ?? false);
   }
