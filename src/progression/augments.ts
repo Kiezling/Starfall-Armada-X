@@ -311,6 +311,7 @@ const DEFENSE: AugmentDef[] = [
     category: AugmentCategory.Defense,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.secondWind = true;
@@ -323,6 +324,7 @@ const DEFENSE: AugmentDef[] = [
     category: AugmentCategory.Defense,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.aegisReversal = true;
@@ -439,6 +441,7 @@ const MOBILITY: AugmentDef[] = [
     category: AugmentCategory.Mobility,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.momentumBonus = 0.5;
@@ -581,6 +584,7 @@ const SYSTEMS: AugmentDef[] = [
     category: AugmentCategory.Systems,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.kineticBatteryCharge = 600;
@@ -593,6 +597,7 @@ const SYSTEMS: AugmentDef[] = [
     category: AugmentCategory.Systems,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.nearMissSlowMo = 0.4;
@@ -605,6 +610,7 @@ const SYSTEMS: AugmentDef[] = [
     category: AugmentCategory.Systems,
     rarity: Rarity.Prototype,
     maxStacks: 1,
+    requiresUnlock: true,
     ruleChanging: true,
     apply: (s) => {
       s.overchargeVents = true;
