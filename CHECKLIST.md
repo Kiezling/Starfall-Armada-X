@@ -1,7 +1,7 @@
 # Starfall Armada X — Build Checklist
 
 Authoritative completion list. Nothing ships until every box is ticked.
-Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
+Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` done & verified
 
 ---
 
@@ -20,54 +20,54 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
 - [x] `core/events.ts` — typed event bus
 - [x] `core/time.ts` — fixed timestep, timescale, hit-stop
 - [x] `core/spatial.ts` — uniform-grid broad-phase collision
-- [ ] `core/input.ts` — keyboard, mouse, gamepad, remapping
-- [ ] `core/settings.ts` — settings model + persistence
-- [ ] `core/save.ts` — meta-progression persistence
+- [x] `core/input.ts` — keyboard, mouse, gamepad, remapping
+- [x] `core/settings.ts` — settings model + persistence
+- [x] `core/save.ts` — meta-progression persistence
 
 ## Phase 1 — Rendering foundation
 
-- [ ] `render/renderer.ts` — WebGLRenderer, ACES tone mapping, sRGB output
-- [ ] Post-processing chain: RenderPass → UnrealBloom (half-res) → Output
-- [ ] Adaptive quality tiers driven by rolling frame time
-- [ ] Proper resize handling incl. devicePixelRatio cap
+- [x] `render/renderer.ts` — WebGLRenderer, ACES tone mapping, sRGB output
+- [x] Post-processing chain: RenderPass → UnrealBloom (half-res) → Output
+- [x] Adaptive quality tiers driven by rolling frame time
+- [x] Proper resize handling incl. devicePixelRatio cap
 - [x] `render/palette.ts` — colour system + 4 colourblind modes
-- [ ] `render/camera.ts` — chase camera, critically-damped spring follow
-- [ ] Trauma-based directional screen shake with accessibility scaling
-- [ ] FOV kick on boost and heavy hits
-- [ ] Death camera: slow-motion orbit of the wreck
-- [ ] `render/starfield.ts` — procedural skybox, nebula, parallax star layers
-- [ ] `render/arena.ts` — hex-grid boundary shell that brightens near the edge
-- [ ] Arena debris/asteroid field (instanced)
-- [ ] Sector-specific dressing (Debris Belt / Ion Storm / The Maw)
+- [x] `render/camera.ts` — chase camera, critically-damped spring follow
+- [x] Trauma-based directional screen shake with accessibility scaling
+- [x] FOV kick on boost and heavy hits
+- [x] Death camera: slow-motion orbit of the wreck
+- [x] `render/starfield.ts` — procedural skybox, nebula, parallax star layers
+- [x] `render/arena.ts` — hex-grid boundary shell that brightens near the edge
+- [x] Arena debris/asteroid field (instanced)
+- [x] Sector-specific dressing (Debris Belt / Ion Storm / The Maw)
 
 ## Phase 2 — Effects
 
-- [ ] `render/fx/particles.ts` — single GPU-animated `Points` system, pooled spawns
-- [ ] Particle emitters: spark, smoke, ember, shockwave-dust, engine-wash
-- [ ] `render/fx/trails.ts` — ribbon engine trails for player and enemies
-- [ ] `render/fx/impacts.ts` — hit sparks along reflected vector
-- [ ] Kill sequence: white flash → expanding ring → debris → smoke
-- [ ] `render/fx/shields.ts` — hex shield shell with hit ripple
-- [ ] Shield break: shatter-outward shell effect
-- [ ] Muzzle flashes per weapon type
-- [ ] Damage numbers (pooled, toggleable, crit-coloured)
-- [ ] Chromatic-aberration pulse on player damage
-- [ ] Screen-edge crimson vignette on low hull
+- [~] `render/fx/particles.ts` — single GPU-animated `Points` system, pooled spawns
+- [~] Particle emitters: spark, smoke, ember, shockwave-dust, engine-wash
+- [~] `render/fx/trails.ts` — ribbon engine trails for player and enemies
+- [~] `render/fx/impacts.ts` — hit sparks along reflected vector
+- [~] Kill sequence: white flash → expanding ring → debris → smoke
+- [~] `render/fx/shields.ts` — hex shield shell with hit ripple
+- [~] Shield break: shatter-outward shell effect
+- [~] Muzzle flashes per weapon type
+- [~] Damage numbers (pooled, toggleable, crit-coloured)
+- [~] Chromatic-aberration pulse on player damage
+- [~] Screen-edge crimson vignette on low hull
 
 ## Phase 3 — The ship
 
-- [ ] `ship/geometry.ts` — procedural fighter mesh: fuselage, swept wings, canards, engines
-- [ ] Panel-line / greeble detail via procedurally generated textures
-- [ ] Emissive engine bells, cockpit glass, running lights
-- [ ] Animated control surfaces that respond to steering input
-- [ ] `ship/hulls.ts` — 4 hulls (Starfall, Vireo, Bastion, Wraith) with distinct silhouettes
-- [ ] `ship/flight.ts` — velocity approach, angular acceleration + damping
-- [ ] Visual banking proportional to yaw rate
-- [ ] Auto-levelling roll
-- [ ] Boost: speed, FOV, trail intensity, meter drain
-- [ ] Drift: decoupled heading/velocity with cooldown
-- [ ] Arena boundary soft-push + hard clamp with warning
-- [ ] `ship/player.ts` — hull, shields, heat, regeneration, i-frames
+- [x] `ship/geometry.ts` — procedural fighter mesh: fuselage, swept wings, canards, engines
+- [x] Panel-line / greeble detail via procedurally generated textures
+- [x] Emissive engine bells, cockpit glass, running lights
+- [x] Animated control surfaces that respond to steering input
+- [x] `ship/hulls.ts` — 4 hulls (Starfall, Vireo, Bastion, Wraith) with distinct silhouettes
+- [x] `ship/flight.ts` — velocity approach, angular acceleration + damping
+- [x] Visual banking proportional to yaw rate
+- [x] Auto-levelling roll
+- [x] Boost: speed, FOV, trail intensity, meter drain
+- [x] Drift: decoupled heading/velocity with cooldown
+- [x] Arena boundary soft-push + hard clamp with warning
+- [x] `ship/player.ts` — hull, shields, heat, regeneration, i-frames
 
 ## Phase 4 — Combat
 
@@ -126,36 +126,36 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
 
 ## Phase 7 — Progression
 
-- [ ] `progression/augments.ts` — 44+ augments across 4 categories
-- [ ] Augment effect hook system (stat mods + event-driven rule changes)
-- [ ] Rarity weighting with visible odds + Prototype pity timer
-- [ ] All Systems augments from the design doc implemented
-- [ ] Augment stacking with correct multiplicative/additive semantics
-- [ ] `progression/run.ts` — run state, sectors, waves, threat level, salvage tally
-- [ ] Sector modifiers that change rules (asteroid cover, EMP fronts, contracting arena)
-- [ ] `progression/meta.ts` — salvage, unlock tree, persistence
-- [ ] Unlocks grant options (weapons/hulls/augments/cosmetics), never flat power
+- [x] `progression/augments.ts` — 44+ augments across 4 categories
+- [x] Augment effect hook system (stat mods + event-driven rule changes)
+- [x] Rarity weighting with visible odds + Prototype pity timer
+- [x] All Systems augments from the design doc implemented
+- [x] Augment stacking with correct multiplicative/additive semantics
+- [x] `progression/run.ts` — run state, sectors, waves, threat level, salvage tally
+- [x] Sector modifiers that change rules (asteroid cover, EMP fronts, contracting arena)
+- [x] `progression/meta.ts` — salvage, unlock tree, persistence
+- [x] Unlocks grant options (weapons/hulls/augments/cosmetics), never flat power
 
 ## Phase 8 — Audio
 
-- [ ] `audio/engine.ts` — Web Audio graph, master/music/SFX buses, ducking
-- [ ] Positional audio for enemy fire
-- [ ] Suspend/resume on tab visibility; unlock on first gesture
-- [ ] `audio/sfx.ts` — synthesised bank, distinct voice per weapon
-- [ ] Enemy death, shield break, low-hull warning, pickup, UI cues
-- [ ] Telegraph cues that duck everything else
-- [ ] `audio/music.ts` — procedural layered score, intensity-driven layers
-- [ ] Boss music layer; per-sector key shift
-- [ ] Volume sliders persisted
+- [~] `audio/engine.ts` — Web Audio graph, master/music/SFX buses, ducking
+- [~] Positional audio for enemy fire
+- [~] Suspend/resume on tab visibility; unlock on first gesture
+- [~] `audio/sfx.ts` — synthesised bank, distinct voice per weapon
+- [~] Enemy death, shield break, low-hull warning, pickup, UI cues
+- [~] Telegraph cues that duck everything else
+- [~] `audio/music.ts` — procedural layered score, intensity-driven layers
+- [~] Boss music layer; per-sector key shift
+- [~] Volume sliders persisted
 
 ## Phase 9 — UI
 
-- [ ] `ui/styles.css` — cohesive HUD/menu visual language
-- [ ] `ui/hud.ts` — hull, shields, heat, boost, weapon state
-- [ ] 3D radar showing relative position incl. above/below
-- [ ] Off-screen threat arrows sized by proximity
-- [ ] Lock-on reticle + lead-indicator pip
-- [ ] Wave/sector/threat-level readout, run timer, score
+- [~] `ui/styles.css` — cohesive HUD/menu visual language
+- [~] `ui/hud.ts` — hull, shields, heat, boost, weapon state
+- [~] 3D radar showing relative position incl. above/below
+- [~] Off-screen threat arrows sized by proximity
+- [~] Lock-on reticle + lead-indicator pip
+- [~] Wave/sector/threat-level readout, run timer, score
 - [ ] `ui/draft.ts` — 3-card augment draft with rarity, category colour, full text
 - [ ] Reroll (1 per draft, +1 on Starfall hull)
 - [ ] `ui/menus.ts` — title, pause, settings, game over, run summary
@@ -194,7 +194,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
 - [ ] All entity types pooled
 - [ ] Instanced rendering for projectiles, enemies, debris, particles
 - [ ] Spatial hash broad phase (no O(n²))
-- [ ] Adaptive quality tiers verified to shed effects, not gameplay
+- [x] Adaptive quality tiers verified to shed effects, not gameplay
 - [ ] Draw calls ≤ 120 in a heavy wave
 - [ ] Proper disposal on teardown / run restart
 - [ ] Verified 60 fps with 200+ live entities

@@ -11,6 +11,7 @@ import { Starfield } from './render/starfield';
 import { buildShip } from './ship/geometry';
 import { HULL_ORDER } from './ship/hulls';
 import { palette } from './render/palette';
+import { applyEnvironment } from './render/environment';
 
 const app = document.getElementById('app')!;
 const render = new RenderSystem(app);
@@ -18,6 +19,7 @@ const scene = render.scene;
 const camera = render.camera;
 
 const starfield = new Starfield(scene, 1337);
+applyEnvironment(scene, render.renderer);
 
 const key = new THREE.DirectionalLight(0xffffff, 2.6);
 key.position.set(4, 6, 5);

@@ -304,6 +304,58 @@ function hullRadiusFraction(t: number): number {
 }
 
 /* ------------------------------------------------------------------------------------------ */
+/* Merge safety                                                                                 */
+/* ------------------------------------------------------------------------------------------ */
+
+/**
+ * `BufferGeometryUtils.mergeGeometries` silently returns `null` if its inputs are not
+ * uniformly indexed or uniformly non-indexed, or if their attribute sets differ (see
+ * BufferGeometryUtils.js) — it logs a console.error and hands back `null` rather than
+ * throwing. This file mixes primitives that are indexed by construction (Lathe, Circle, Box,
+ * Cylinder, Cone, Sphere) with `ExtrudeGeometry`, which THREE builds non-indexed. Merging them
+ * directly hits exactly that mismatch.
+ *
+ * This wrapper normalises every input to non-indexed first (index attributes carry no
+ * information mergeGeometries needs to preserve here — nothing downstream relies on shared
+ * vertices), verifies the attribute sets line up, and throws a descriptive error instead of
+ * ever letting a `null` reach a `THREE.Mesh` constructor.
+ */
+function mergeSafely(geometries: readonly THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
+  if (geometries.length === 0) throw new Error(`ship/geometry: mergeSafely("${label}") got zero geometries.`);
+
+  const normalized = geometries.map((g) => (g.index ? g.toNonIndexed() : g));
+
+  const reference = Object.keys(normalized[0]!.attributes).sort();
+  for (let i = 1; i < normalized.length; i++) {
+    const attrs = Object.keys(normalized[i]!.attributes).sort();
+    const matches = attrs.length === reference.length && attrs.every((a, idx) => a === reference[idx]);
+    if (!matches) {
+      throw new Error(
+        `ship/geometry: mergeSafely("${label}") attribute mismatch at index ${i}: ` +
+          `[${attrs.join(',')}] vs [${reference.join(',')}].`,
+      );
+    }
+  }
+
+  const merged = mergeGeometries(normalized as THREE.BufferGeometry[], false);
+
+  // toNonIndexed() allocates a brand-new geometry when it converts one; those copies are pure
+  // merge scratch and must be disposed here. Inputs that were already non-indexed are returned
+  // by reference (normalized[i] === geometries[i]) and remain the caller's to dispose.
+  for (let i = 0; i < geometries.length; i++) {
+    if (normalized[i] !== geometries[i]) normalized[i]!.dispose();
+  }
+
+  if (!merged) {
+    throw new Error(
+      `ship/geometry: mergeGeometries("${label}") returned null — see the preceding ` +
+        `THREE.BufferGeometryUtils console.error for which input broke uniformity.`,
+    );
+  }
+  return merged;
+}
+
+/* ------------------------------------------------------------------------------------------ */
 /* Geometry builders — everything below returns a fresh BufferGeometry in "assembly space":    */
 /* tail at z = 0, nose at z = -length. buildShip() shifts the finished assembly by +length/2   */
 /* so the ship's root origin lands on its geometric centre, as the interface contract requires.*/
@@ -322,7 +374,10 @@ function buildFuselage(shape: HullShape): THREE.BufferGeometry {
   const cap = new THREE.CircleGeometry(tailRadius, radialSegments);
   cap.scale(1, halfHeight / halfWidth, 1);
 
-  return mergeGeometries([body, cap], false)!;
+  const merged = mergeSafely([body, cap], 'fuselage');
+  body.dispose();
+  cap.dispose();
+  return merged;
 }
 
 /**
@@ -640,12 +695,12 @@ class ShipVisualImpl implements ShipVisual {
     const greebles = buildGreebles(shape);
     staticParts.push(...greebles.hull);
 
-    this.hullGeometry = mergeGeometries(staticParts, false)!;
+    this.hullGeometry = mergeSafely(staticParts, 'hull');
     for (const g of staticParts) g.dispose();
     const hullMesh = new THREE.Mesh(this.hullGeometry, this.hullMaterial);
     assembly.add(hullMesh);
 
-    this.accentGeometry = mergeGeometries(greebles.accent, false)!;
+    this.accentGeometry = mergeSafely(greebles.accent, 'accent');
     for (const g of greebles.accent) g.dispose();
     const accentMesh = new THREE.Mesh(this.accentGeometry, this.accentMaterial);
     assembly.add(accentMesh);

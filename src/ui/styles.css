@@ -1,0 +1,1295 @@
+/*
+ * Starfall Armada X — UI visual language.
+ *
+ * Clean hard sci-fi: thin hairline borders, generous letter-spacing on headings, glass panels
+ * over the 3D scene. No rounded-bubble chrome — corners are near-square, edges are lines, not
+ * shadows. Every colour is exposed as a custom property so `render/palette.ts` can repaint the
+ * whole UI the instant the colourblind mode changes (see Hud.applyPalette). The literal hex
+ * values below match `DEFAULT_PALETTE` in palette.ts and exist only so the first paint (before
+ * any JS runs) is never unstyled.
+ *
+ * DESIGN.md §13/§15: all text here is sized so the *effective* rendered size is >= 14px, no
+ * state is conveyed by colour alone, and every animation has a reduced-motion escape hatch.
+ */
+
+:root {
+  /* Player/HUD colours ------------------------------------------------------------------- */
+  --hud-primary: #bfe9ff;
+  --hud-dim: #5f7d94;
+  --hud-warning: #ffc23f;
+  --hud-danger: #ff2d55;
+  --hud-good: #3ddc84;
+
+  --player-accent: #4fc3f7;
+  --player-shield: #59b6ff;
+  --enemy-accent: #ff4fd8;
+  --boundary: #2e6f8f;
+
+  --telegraph-aimed: #ffd23f;
+  --telegraph-lethal: #ff2d55;
+
+  /* Augment category colours: Offense, Defense, Mobility, Systems ------------------------- */
+  --cat-offense: #ff4d5e;
+  --cat-defense: #4da6ff;
+  --cat-mobility: #3ddc84;
+  --cat-systems: #ffc23f;
+
+  /* Rarity colours: Common, Rare, Prototype ------------------------------------------------ */
+  --rarity-common: #9fb3c8;
+  --rarity-rare: #4da6ff;
+  --rarity-prototype: #ffc23f;
+
+  /* Structural chrome (not palette-driven, stays constant across colourblind modes) -------- */
+  --bg-void: #04060f;
+  --bg-panel: rgba(8, 13, 22, 0.78);
+  --bg-panel-strong: rgba(6, 10, 17, 0.92);
+  --bg-panel-hover: rgba(20, 30, 44, 0.85);
+  --border-thin: rgba(191, 233, 255, 0.22);
+  --border-strong: rgba(191, 233, 255, 0.5);
+  --text-primary: #e8f3ff;
+  --text-dim: #90a7bd;
+  --text-faint: #5f7188;
+
+  --font-heading: 'Segoe UI', ui-sans-serif, system-ui, -apple-system, Roboto, sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Consolas', 'SFMono-Regular', Menlo, monospace;
+
+  --radius: 2px;
+  --panel-blur: 10px;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Reset, scoped to our own UI roots only — index.html owns the document-level reset.
+ * ------------------------------------------------------------------------------------------- */
+
+.hud-root,
+.menu-root,
+.draft-root,
+.hangar-root {
+  box-sizing: border-box;
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+.hud-root *,
+.menu-root *,
+.draft-root *,
+.hangar-root * {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* Keyboard/gamepad focus must always be visible — shape + colour, never colour alone. */
+.hud-root :focus-visible,
+.menu-root :focus-visible,
+.draft-root :focus-visible,
+.hangar-root :focus-visible {
+  outline: 2px solid var(--hud-primary);
+  outline-offset: 2px;
+}
+
+/* =================================================================================================
+ * HUD
+ * ============================================================================================= */
+
+.hud-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+}
+
+.hud-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-thin);
+  backdrop-filter: blur(var(--panel-blur)) saturate(1.15);
+  -webkit-backdrop-filter: blur(var(--panel-blur)) saturate(1.15);
+  border-radius: var(--radius);
+}
+
+.hud-label {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  line-height: 1;
+}
+
+/* --- Vitals: hull / shield / heat / boost / battery -------------------------------------- */
+
+.hud-vitals {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: 260px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.hud-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hud-stat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.hud-stat-name {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.hud-stat-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-bar-track {
+  position: relative;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-thin);
+  overflow: hidden;
+}
+
+.hud-bar-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(1);
+  background: var(--hud-primary);
+  will-change: transform;
+}
+
+.hud-bar--hull .hud-bar-fill {
+  background: var(--hud-good);
+}
+.hud-bar--shield .hud-bar-fill {
+  background: var(--player-shield);
+}
+.hud-bar--heat .hud-bar-fill {
+  background: var(--hud-warning);
+}
+.hud-bar--boost .hud-bar-fill {
+  background: var(--player-accent);
+}
+.hud-bar--battery .hud-bar-fill {
+  background: var(--cat-systems);
+}
+
+/* Low hull: shape (thicker border) + colour + text, and a slow pulse that respects
+   reduced-motion. Never colour alone. */
+.hud-stat--low .hud-bar-track {
+  border-color: var(--hud-danger);
+  border-width: 2px;
+}
+.hud-stat--low .hud-bar-fill {
+  background: var(--hud-danger);
+}
+.hud-stat--low .hud-stat-name::after {
+  content: ' \2014 CRITICAL';
+  color: var(--hud-danger);
+}
+.hud-stat--low {
+  animation: hud-pulse 1s ease-in-out infinite;
+}
+
+.hud-bar--venting .hud-bar-fill {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--hud-danger),
+    var(--hud-danger) 6px,
+    var(--hud-warning) 6px,
+    var(--hud-warning) 12px
+  );
+}
+.hud-bar--venting .hud-stat-name::after {
+  content: ' \2014 VENTING';
+  color: var(--hud-danger);
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+/* --- Weapons -------------------------------------------------------------------------------- */
+
+.hud-weapons {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 230px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: right;
+}
+
+.hud-weapon-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hud-weapon-name {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.hud-charges {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.hud-charge-pip {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  transform: rotate(45deg);
+}
+.hud-charge-pip.is-full {
+  background: var(--player-accent);
+}
+
+/* --- Drift indicator -------------------------------------------------------------------- */
+
+.hud-drift {
+  position: absolute;
+  right: 18px;
+  bottom: 190px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-drift-glyph {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--hud-dim);
+  border-radius: 50%;
+  border-top-color: transparent;
+  flex: none;
+}
+.hud-drift.is-ready .hud-drift-glyph {
+  border-color: var(--hud-good);
+  border-top-color: var(--hud-good);
+}
+.hud-drift-text {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hud-dim);
+}
+.hud-drift.is-ready .hud-drift-text {
+  color: var(--hud-good);
+}
+
+/* --- Status strip (sector / encounter / enemies / time / score / salvage) ---------------- */
+
+.hud-status {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  display: flex;
+  gap: 22px;
+  align-items: baseline;
+}
+
+.hud-status-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.hud-status-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.hud-status-sector {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-primary);
+}
+
+/* --- Radar ---------------------------------------------------------------------------------- */
+
+.hud-radar {
+  position: absolute;
+  right: 18px;
+  top: 16px;
+  width: 148px;
+  height: 148px;
+  padding: 6px;
+}
+
+.hud-radar canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* --- Boss bar --------------------------------------------------------------------------- */
+
+.hud-boss {
+  position: absolute;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 460px;
+  max-width: 70vw;
+  padding: 8px 14px;
+  display: none;
+}
+.hud-boss.is-visible {
+  display: block;
+}
+
+.hud-boss-name {
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--enemy-accent);
+  text-align: center;
+  margin-bottom: 5px;
+}
+
+.hud-boss-track {
+  position: relative;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-thin);
+}
+
+.hud-boss-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: var(--enemy-accent);
+  will-change: transform;
+}
+
+.hud-boss-seg {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--bg-void);
+  display: none;
+}
+.hud-boss-seg.is-visible {
+  display: block;
+}
+
+.hud-boss-phase {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* --- Off-screen threat arrows (pooled) ---------------------------------------------------- */
+
+.hud-arrow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  display: none;
+  will-change: transform;
+}
+.hud-arrow.is-visible {
+  display: block;
+}
+.hud-arrow::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 14px solid var(--enemy-accent);
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+}
+
+/* --- Banner (sector/wave callouts) ------------------------------------------------------- */
+
+.hud-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  padding: 14px 34px;
+  opacity: 0;
+  display: none;
+}
+.hud-banner.is-visible {
+  display: block;
+  animation: hud-banner-in 0.4s ease-out;
+}
+.hud-banner-title {
+  font-size: 26px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--hud-primary);
+}
+.hud-banner-subtitle {
+  margin-top: 6px;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+@keyframes hud-banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -60%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* --- Damage numbers (pooled) --------------------------------------------------------------- */
+
+.hud-dmg-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.hud-dmg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  will-change: transform;
+}
+.hud-dmg.is-visible {
+  display: block;
+}
+.hud-dmg-text {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.hud-dmg.is-crit .hud-dmg-text {
+  color: var(--hud-warning);
+  font-size: 19px;
+}
+.hud-dmg.is-crit .hud-dmg-text::after {
+  content: '!';
+}
+.hud-dmg-text.is-anim {
+  animation: hud-dmg-rise 0.9s ease-out forwards;
+}
+@keyframes hud-dmg-rise {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-38px);
+  }
+}
+
+/* --- Boundary warning vignette ------------------------------------------------------------- */
+
+.hud-boundary {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0) 55%,
+    var(--boundary) 100%
+  );
+  mix-blend-mode: screen;
+}
+.hud-boundary.is-danger {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 45%, var(--hud-danger) 100%);
+}
+
+/* --- Full-screen overlay canvas (lock reticle / lead pip) --------------------------------- */
+
+.hud-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* =================================================================================================
+ * Menus (title / pause / settings / game over / sector clear)
+ * ============================================================================================= */
+
+.menu-root {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  background: rgba(2, 4, 8, 0.55);
+}
+.menu-root.is-visible {
+  display: flex;
+}
+
+.menu-panel {
+  background: var(--bg-panel-strong);
+  border: 1px solid var(--border-thin);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  padding: 34px 42px;
+  min-width: 380px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.menu-title-game {
+  font-size: 44px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.15;
+  margin: 0 0 4px;
+}
+.menu-title-game .accent {
+  color: var(--hud-primary);
+}
+.menu-subtitle {
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 26px;
+}
+
+.menu-heading {
+  font-size: 20px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin: 0 0 18px;
+  text-align: center;
+}
+
+.menu-stats {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  margin-bottom: 24px;
+}
+.menu-stat {
+  text-align: center;
+}
+.menu-stat-value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  color: var(--hud-primary);
+}
+.menu-stat-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 260px;
+}
+
+.menu-button {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-thin);
+  color: var(--text-primary);
+  padding: 12px 20px;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.menu-button:hover,
+.menu-button.is-focused {
+  background: rgba(191, 233, 255, 0.1);
+  border-color: var(--border-strong);
+}
+.menu-button--primary {
+  border-color: var(--hud-primary);
+  color: var(--hud-primary);
+}
+.menu-button--danger {
+  border-color: var(--hud-danger);
+  color: var(--hud-danger);
+}
+
+/* --- Settings ------------------------------------------------------------------------------- */
+
+.settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 460px;
+}
+
+.settings-section {
+  border-top: 1px solid var(--border-thin);
+  padding-top: 12px;
+}
+.settings-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.settings-section-title {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-primary);
+  margin-bottom: 10px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+}
+
+.settings-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  justify-content: flex-end;
+}
+
+.settings-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 42px;
+  text-align: right;
+}
+
+.settings-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 140px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border-thin);
+  outline: none;
+  cursor: pointer;
+}
+.settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--hud-primary);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.settings-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--hud-primary);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.settings-toggle {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  flex: none;
+  padding: 0;
+}
+.settings-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-dim);
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+.settings-toggle[aria-checked='true'] {
+  border-color: var(--hud-good);
+}
+.settings-toggle[aria-checked='true']::after {
+  background: var(--hud-good);
+  transform: translateX(18px);
+}
+
+.settings-select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-thin);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.settings-keybind {
+  font-family: var(--font-mono);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-thin);
+  color: var(--hud-primary);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  min-width: 96px;
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+.settings-keybind.is-listening {
+  border-color: var(--hud-warning);
+  color: var(--hud-warning);
+}
+
+.menu-close-row {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+/* --- Game over / sector clear -------------------------------------------------------------- */
+
+.gameover-result {
+  text-align: center;
+  font-size: 30px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.gameover-result.is-victory {
+  color: var(--hud-good);
+}
+.gameover-result.is-defeat {
+  color: var(--hud-danger);
+}
+
+.gameover-augments {
+  margin: 18px 0;
+  border-top: 1px solid var(--border-thin);
+  padding-top: 12px;
+}
+.gameover-augments-title {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.gameover-augment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.gameover-augment-chip {
+  font-size: 12px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-thin);
+  color: var(--text-primary);
+}
+.gameover-augment-chip .stacks {
+  color: var(--hud-primary);
+  font-family: var(--font-mono);
+  margin-left: 4px;
+}
+
+.sectorclear-name {
+  text-align: center;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.sectorclear-time {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--hud-primary);
+}
+
+/* =================================================================================================
+ * Draft (augment picker)
+ * ============================================================================================= */
+
+.draft-root {
+  position: fixed;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  z-index: 25;
+  background: rgba(2, 4, 8, 0.62);
+}
+.draft-root.is-visible {
+  display: flex;
+}
+
+.draft-heading {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.draft-odds {
+  display: flex;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.draft-odds .odd-common {
+  color: var(--rarity-common);
+}
+.draft-odds .odd-rare {
+  color: var(--rarity-rare);
+}
+.draft-odds .odd-prototype {
+  color: var(--rarity-prototype);
+}
+
+.draft-cards {
+  display: flex;
+  gap: 22px;
+}
+
+.draft-card {
+  width: 240px;
+  min-height: 300px;
+  background: var(--bg-panel-strong);
+  border: 1px solid var(--border-thin);
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+.draft-card:hover,
+.draft-card.is-focused {
+  transform: translateY(-4px);
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+
+.draft-card-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.draft-card-rarity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.draft-rarity-glyph {
+  width: 9px;
+  height: 9px;
+  transform: rotate(45deg);
+  flex: none;
+}
+
+.draft-card-name {
+  font-size: 17px;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+.draft-card-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  align-self: flex-start;
+}
+.draft-category-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.draft-card-desc {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  flex: 1;
+}
+
+.draft-card-stacks {
+  font-size: 12px;
+  color: var(--hud-primary);
+  font-family: var(--font-mono);
+}
+
+/* Rule-changing (Systems, build-defining) picks get clear emphasis: a bracketed border motif
+   plus a label — never colour alone. */
+.draft-card--rule-changing {
+  border-color: var(--cat-systems);
+  border-width: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 194, 63, 0.18);
+}
+.draft-card--rule-changing::before {
+  content: 'RULE CHANGE';
+  align-self: flex-start;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--cat-systems);
+  border: 1px solid var(--cat-systems);
+  padding: 2px 6px;
+}
+
+.draft-reroll {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.draft-reroll-key {
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-thin);
+  padding: 3px 8px;
+  color: var(--hud-primary);
+}
+.draft-reroll.is-disabled {
+  opacity: 0.4;
+}
+
+/* =================================================================================================
+ * Hangar
+ * ============================================================================================= */
+
+.hangar-root {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  background: rgba(2, 4, 8, 0.55);
+}
+.hangar-root.is-visible {
+  display: flex;
+}
+
+.hangar-panel {
+  background: var(--bg-panel-strong);
+  border: 1px solid var(--border-thin);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  padding: 30px 36px;
+  width: 900px;
+  max-width: 94vw;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.hangar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.hangar-salvage {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  color: var(--hud-primary);
+}
+.hangar-salvage-label {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-right: 8px;
+}
+
+.hangar-tagline {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--border-thin);
+  padding-bottom: 14px;
+}
+.hangar-tagline .accent {
+  color: var(--hud-good);
+}
+
+.hangar-section {
+  margin-bottom: 22px;
+}
+.hangar-section-title {
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.hangar-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.hangar-node {
+  border: 1px solid var(--border-thin);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  position: relative;
+}
+.hangar-node:hover,
+.hangar-node.is-focused {
+  background: var(--bg-panel-hover);
+  border-color: var(--border-strong);
+}
+
+.hangar-node-name {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.hangar-node-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.hangar-node-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hangar-node-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.hangar-node-state-glyph {
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+
+/* Four states, each with a distinct shape AND colour. */
+.hangar-node--owned {
+  border-color: var(--hud-good);
+}
+.hangar-node--owned .hangar-node-state {
+  color: var(--hud-good);
+}
+.hangar-node--owned .hangar-node-state-glyph {
+  border-radius: 50%;
+  background: var(--hud-good);
+}
+
+.hangar-node--affordable .hangar-node-state {
+  color: var(--hud-primary);
+}
+.hangar-node--affordable .hangar-node-state-glyph {
+  background: var(--hud-primary);
+  transform: rotate(45deg);
+}
+
+.hangar-node--unaffordable {
+  opacity: 0.75;
+}
+.hangar-node--unaffordable .hangar-node-state {
+  color: var(--hud-warning);
+}
+.hangar-node--unaffordable .hangar-node-state-glyph {
+  background: transparent;
+  border: 2px solid var(--hud-warning);
+}
+
+.hangar-node--locked {
+  cursor: default;
+  opacity: 0.5;
+}
+.hangar-node--locked .hangar-node-state {
+  color: var(--text-faint);
+}
+.hangar-node--locked .hangar-node-state-glyph {
+  background: transparent;
+  border: 2px dashed var(--text-faint);
+}
+
+.hangar-loadout {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.hangar-loadout-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hangar-loadout-title {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.hangar-loadout-option {
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-thin);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hangar-loadout-option:hover,
+.hangar-loadout-option.is-focused {
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+.hangar-loadout-option.is-selected {
+  border-color: var(--hud-primary);
+  color: var(--hud-primary);
+}
+.hangar-loadout-option-glyph {
+  width: 8px;
+  height: 8px;
+  border: 1px solid currentColor;
+  flex: none;
+}
+.hangar-loadout-option.is-selected .hangar-loadout-option-glyph {
+  background: currentColor;
+}
+
+.hangar-close-row {
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+}
+
+/* =================================================================================================
+ * Accessibility: reduced flash / reduced motion
+ *
+ * `.reduce-flash` is applied to <body> by the settings system. Every animation, glow shadow and
+ * backdrop blur "pulse" in this file must be neutralised by it — nothing here may strobe once
+ * the player has asked for that.
+ * ============================================================================================= */
+
+.reduce-flash *,
+.reduce-flash *::before,
+.reduce-flash *::after {
+  animation: none !important;
+  transition: none !important;
+}
+.reduce-flash .hud-card--rule-changing,
+.reduce-flash .draft-card--rule-changing {
+  box-shadow: none !important;
+}
+.reduce-flash .hud-stat--low .hud-bar-fill {
+  opacity: 1 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-root *,
+  .menu-root *,
+  .draft-root *,
+  .hangar-root * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -109,7 +109,8 @@ const NEBULA_FRAGMENT = /* glsl */ `
     vec3 p = vDir * 1.4 + vec3(uTime * 0.006, uTime * 0.004, -uTime * 0.005);
     float n = fbm(p);
     float n2 = fbm(p * 2.3 + 11.0);
-    float mixT = clamp01(n * 0.7 + n2 * 0.3);
+    // GLSL has no clamp01 — that is a TypeScript helper. Use the built-in three-arg clamp.
+    float mixT = clamp(n * 0.7 + n2 * 0.3, 0.0, 1.0);
 
     vec3 colorA = mix(uColorA0, uColorA1, uFade);
     vec3 colorB = mix(uColorB0, uColorB1, uFade);

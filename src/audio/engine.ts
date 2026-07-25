@@ -63,8 +63,10 @@ export class AudioEngine {
     try {
       if (!this.ctx) {
         type Ctor = typeof AudioContext;
-        const w = window as Window & { webkitAudioContext?: Ctor };
-        const AudioCtor = w.AudioContext ?? w.webkitAudioContext;
+        // AudioContext is declared as a global var rather than a member of the Window
+        // interface, so it has to be reached through globalThis to type-check.
+        const g = globalThis as unknown as { AudioContext?: Ctor; webkitAudioContext?: Ctor };
+        const AudioCtor = g.AudioContext ?? g.webkitAudioContext;
         if (!AudioCtor) return; // No Web Audio in this environment; stay silently unready.
         const ctx = new AudioCtor();
 
@@ -99,7 +101,9 @@ export class AudioEngine {
         this.musicDuck = musicDuck;
         this._ready = true;
       }
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      // Re-read through a local: the graph build above may have bailed out and left ctx null.
+      const ctx = this.ctx;
+      if (ctx && ctx.state === 'suspended') void ctx.resume();
     } catch {
       // Construction or graph setup threw. Leave everything null/unready rather than half-built.
       this.ctx = null;

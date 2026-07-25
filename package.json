@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
-    "verify:play": "node scripts/verify.mjs --play --seconds 12"
+    "verify:play": "node scripts/verify.mjs --play --seconds 12",
+    "selftest": "vite build --ssr src/selftest-run.ts --outDir .selftest --logLevel error && node .selftest/selftest-run.js",
+    "check": "npm run typecheck && npm run selftest && npm run verify"
   },
   "dependencies": {
     "three": "0.185.1"
