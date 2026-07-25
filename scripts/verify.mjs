@@ -161,6 +161,7 @@ const glInfo = await page.evaluate(() => {
 
 /* Optional synthetic input --------------------------------------------------------------------- */
 
+let flying = false;
 if (flag('--play')) {
   console.log('[verify] driving input...');
   await page.mouse.move(640, 360);
@@ -169,10 +170,32 @@ if (flag('--play')) {
   // Dismiss a title screen if one is present.
   await page.keyboard.press('Enter');
   await page.waitForTimeout(600);
-  for (const key of ['KeyW', 'KeyA', 'KeyD', 'Space']) {
-    await page.keyboard.down(key);
-  }
-  await page.mouse.move(760, 300, { steps: 12 });
+  // Fire continuously, but do NOT hold throttle for the whole soak: flying straight for
+  // seconds pins the ship against the arena wall, which leaves every screenshot under the
+  // boundary-danger vignette and hides whatever the shot was meant to show.
+  await page.keyboard.down('Space');
+  flying = true;
+  void (async () => {
+    // Bank around the arena instead of charging out of it: short throttle bursts with
+    // alternating turns, which also exercises steering, strafe, and drift.
+    const turns = [
+      ['KeyW', 900, 900, 300],
+      ['KeyA', 500, 400, 420],
+      ['KeyW', 700, 1180, 260],
+      ['KeyD', 500, 300, 460],
+    ];
+    while (flying) {
+      for (const [key, hold, mx, my] of turns) {
+        if (!flying) return;
+        await page.keyboard.down(key).catch(() => {});
+        await page.mouse.move(mx, my, { steps: 8 }).catch(() => {});
+        await page.waitForTimeout(hold).catch(() => {});
+        await page.keyboard.up(key).catch(() => {});
+      }
+      if (!flying) return;
+      await page.keyboard.press('ControlLeft').catch(() => {});
+    }
+  })();
 }
 
 /* Frame-rate sampling --------------------------------------------------------------------------
@@ -202,6 +225,7 @@ const perf = await page.evaluate(async (seconds) => {
 }, SECONDS);
 
 if (flag('--play')) {
+  flying = false;
   for (const key of ['KeyW', 'KeyA', 'KeyD', 'Space']) {
     await page.keyboard.up(key).catch(() => {});
   }

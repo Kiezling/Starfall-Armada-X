@@ -110,23 +110,39 @@ const BOUNDARY_FRAGMENT = /* glsl */ `
     vec2 a = mod(uv, r) - h;
     vec2 b = mod(uv + h, r) - h;
     vec2 gv = dot(a, a) < dot(b, b) ? a : b;
-    float d = abs(0.5 - max(abs(gv.x) * 0.8660254 + abs(gv.y) * 0.5, abs(gv.y)));
-    return 1.0 - smoothstep(0.0, 0.045, d);
+    // The hexagon metric has to match the orientation of the lattice above. Weighting x by
+    // 0.866 and y by 0.5 (and clamping against |y|) describes a flat-top hexagon, which is
+    // 90 degrees off this pointy-top lattice; the mismatched level set does not tile and the
+    // shell drew a field of triangles instead of a hex grid.
+    vec2 p = abs(gv);
+    float hexDist = max(p.x * 0.5 + p.y * 0.8660254, p.x);
+    return 1.0 - smoothstep(0.0, 0.045, abs(0.5 - hexDist));
   }
 
   void main() {
-    vec2 uv = vec2(atan(vDir.z, vDir.x), acos(clamp(vDir.y, -1.0, 1.0))) * 7.0;
+    // vDir arrives linearly interpolated, which traces the flat chord across each triangle
+    // rather than the sphere itself. Feeding that straight into acos()/the scan term made the
+    // error reset at every facet edge and flat-shaded the shell into ~150px triangles from the
+    // inside. Re-normalizing here projects back onto the sphere and, because adjacent faces
+    // agree along their shared edge, the pattern is continuous across the tessellation.
+    vec3 dir = normalize(vDir);
+
+    // 44 cells around the equator rather than 2*PI*7 (=43.98): an integer count means the
+    // hex grid wraps cleanly across the atan() branch cut instead of leaving a seam meridian.
+    float az = atan(dir.z, dir.x);
+    float inc = acos(clamp(dir.y, -1.0, 1.0));
+    vec2 uv = vec2(az * (44.0 / 6.28318531), inc * 7.0);
     float hex = hexLines(uv);
 
     // Overall brightness ramps with how close the player is to the edge (95%/100% per the
     // flight model's warning band), plus a tight localised glow in the player's own direction
     // so the wall reads as reacting to *you* specifically, not just a static shell.
     float edgeGlow = smoothstep(0.72, 1.0, uPlayerFrac);
-    float proximity = pow(max(dot(vDir, uPlayerDir), 0.0), 10.0);
+    float proximity = pow(max(dot(dir, uPlayerDir), 0.0), 10.0);
     float localGlow = proximity * smoothstep(0.25, 1.0, uPlayerFrac);
 
     // A slow scan-line sweep so the shell reads as active tech, not a painted-on texture.
-    float scan = pow(sin(vDir.y * 18.0 - uTime * 1.1) * 0.5 + 0.5, 5.0);
+    float scan = pow(sin(dir.y * 18.0 - uTime * 1.1) * 0.5 + 0.5, 5.0);
 
     float intensity = hex * (0.035 + edgeGlow * 0.55 + localGlow * 1.6) + scan * (0.05 + edgeGlow * 0.2);
     gl_FragColor = vec4(uColor, clamp(intensity, 0.0, 1.0));

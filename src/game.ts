@@ -165,6 +165,8 @@ export class Game {
   private disposed = false;
   private speedFraction = 0;
   private boundaryWarning = 0;
+  /** Decays to 0 in updatePresentation; the renderer holds no decay of its own. */
+  private damagePulse = 0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -373,7 +375,7 @@ export class Game {
       this.chase.addTrauma(FEEL.traumaPlayerHit);
       this.chase.addImpulse(e.dirX, e.dirY, e.dirZ, 1.2);
       this.clock.applyHitStop(FEEL.hitStopPlayerHit);
-      this.render.setDamagePulse(1);
+      this.damagePulse = 1;
       playSfx('playerHit', 0.9);
       if (e.shieldHit && this.playerShieldHandle >= 0) {
         const player = this.playerSystem.state;
@@ -478,6 +480,11 @@ export class Game {
     this.chase.reset();
     this.chase.snapTo(this.playerSystem.state);
 
+    // A run that ended mid-flash must not start the next one tinted red.
+    this.damagePulse = 0;
+    this.render.setDamagePulse(0);
+    this.render.setLowHullVignette(0);
+
     this.hud.setVisible(true);
     this.setState(GameState.Playing);
     this.events.emit('run:started', {});
@@ -525,6 +532,7 @@ export class Game {
     else this.arena.setRadius(target);
     this.combatCtx.arenaRadius = target;
     this.enemyCtx.arenaRadius = target;
+    this.chase.setArenaRadius(target);
   }
 
   /* The loop ----------------------------------------------------------------------------- */
@@ -908,6 +916,10 @@ export class Game {
     this.particles.setQuality(this.render.quality);
     this.impacts.setQuality(this.render.quality);
 
+    // Tracked every frame rather than only on sector change, because a contracting arena
+    // shrinks continuously and the camera clamp has to shrink with it.
+    this.chase.setArenaRadius(this.arena.radius);
+
     // Ship visual follows simulation state.
     this.shipVisual.root.position.copy(player.position);
     this.shipVisual.root.quaternion.copy(player.quaternion);
@@ -946,6 +958,14 @@ export class Game {
       aimDir.x, aimDir.y, aimDir.z,
       0, 1, 0,
     );
+
+    // The renderer only stores the uniform, so the decay has to live here. Driven by rawDt
+    // rather than scaled time, otherwise the hit-stop fired by the same hit would stretch
+    // the flash out for as long as time is frozen.
+    if (this.damagePulse > 0) {
+      this.damagePulse = Math.max(0, this.damagePulse - rawDt / FEEL.damagePulseDecay);
+    }
+    this.render.setDamagePulse(this.damagePulse);
 
     const hullFraction = player.stats.maxHull > 0 ? player.hull / player.stats.maxHull : 0;
     this.render.setLowHullVignette(hullFraction < 0.3 ? 1 - hullFraction / 0.3 : 0);

@@ -24,6 +24,8 @@ const FOV_SPEED_SMOOTHING = 0.01;
 const IMPULSE_SMOOTH_TIME = 0.35;
 /** Never let shake/impulse push the camera closer to the ship than this. */
 const MIN_SHIP_DISTANCE = CAMERA.offsetBack * 0.35;
+/** Keep the camera this fraction inside the arena radius, clear of the boundary shell. */
+const CAMERA_ARENA_MARGIN = 0.94;
 
 // Module-level scratch -- borrowed within a single synchronous update() call, never retained.
 const CAM_IDEAL_POS = /*#__PURE__*/ new THREE.Vector3();
@@ -67,8 +69,16 @@ export class ChaseCamera {
   private readonly deathCamTarget = new THREE.Vector3();
   private deathOrbitAngle = 0;
 
+  /** Arena radius, so the camera can be kept inside the boundary shell. */
+  private arenaRadius = Infinity;
+
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
+  }
+
+  /** Kept in sync by the game whenever the arena resizes (sector change, contraction). */
+  setArenaRadius(radius: number): void {
+    this.arenaRadius = radius;
   }
 
   update(player: PlayerState, dt: number, rawDt: number, settings: Settings): void {
@@ -158,6 +168,18 @@ export class ChaseCamera {
         if (dist < EPSILON) CAM_TO_SHIP.copy(CAM_OFFSET).normalize();
         else CAM_TO_SHIP.multiplyScalar(1 / dist);
         this.camera.position.copy(player.position).addScaledVector(CAM_TO_SHIP, MIN_SHIP_DISTANCE);
+      }
+    }
+
+    // Keep the camera inside the boundary shell. The chase spring trails the ship, so a player
+    // pinned against the arena wall would otherwise drag the camera onto (and through) the
+    // shell — at which point the near plane slices its triangles and they read as huge flat
+    // sheets across the screen. DESIGN §12: the chase camera never clips through geometry.
+    if (Number.isFinite(this.arenaRadius)) {
+      const limit = this.arenaRadius * CAMERA_ARENA_MARGIN;
+      const distSq = this.camera.position.lengthSq();
+      if (distSq > limit * limit) {
+        this.camera.position.multiplyScalar(limit / Math.sqrt(distSq));
       }
     }
 

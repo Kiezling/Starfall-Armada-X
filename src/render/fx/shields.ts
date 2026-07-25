@@ -324,9 +324,12 @@ void main() {
   if (uFraction <= 0.0) discard;
 
   vec2 uv = cubeUV(vObjDir) * 6.0;
+  // hexEdgeDist measures outward from the cell *centre* (0 at centre, 0.5 at the border), so
+  // the grid line is the high end of that range. Testing it the other way round filled every
+  // cell solid and turned the shell into an opaque ball that hid the ship it was protecting.
   float hd = hexEdgeDist(hexCell(uv));
-  float hexLine = 1.0 - smoothstep(0.4, 0.5, hd);
-  float hexFill = smoothstep(0.0, 0.5, hd) * 0.12;
+  float hexLine = smoothstep(0.40, 0.49, hd);
+  float hexFill = (1.0 - smoothstep(0.0, 0.5, hd)) * 0.12;
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float ndotv = clamp(dot(viewDir, normalize(vWorldNormal)), 0.0, 1.0);

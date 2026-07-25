@@ -149,6 +149,8 @@ export const FEEL = {
 
   /** Seconds an enemy's emissive hit-flash takes to fade. */
   hitFlashDecay: 0.06,
+  /** Seconds the crimson damage flash + chromatic aberration takes to fade to zero. */
+  damagePulseDecay: 0.4,
   /** Seconds a damage number lives. */
   damageNumberLife: 0.9,
 } as const;
