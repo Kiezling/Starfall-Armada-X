@@ -21,6 +21,7 @@ import { QualityTier } from '../core/types';
 import { CAMERA, RENDER } from '../core/constants';
 import { clamp, clamp01 } from '../core/math';
 import { RollingAverage } from '../core/pool';
+import { DEPTH_FOG_DENSITY, depthFogColor } from './palette';
 
 /**
  * Chromatic aberration + vignette + grain, applied once after bloom compositing.
@@ -35,6 +36,14 @@ const PostFXShader = {
     uReduceFlash: { value: 0 },
     uTime: { value: 0 },
     uResolution: { value: new THREE.Vector2(1, 1) },
+    // Camera-owned, computed each frame from the chase camera's own speed-driven FOV — no
+    // gameplay system feeds this, so it works even though the post pass has no direct notion
+    // of ship velocity.
+    uSpeedFrac: { value: 0 },
+    // A brief radial burst on taking a hit, decoupled from the damage-pulse decay so a hit
+    // still reads as a *punch* even though the pulse itself now fades slowly. Hard-gated to
+    // zero under reduceFlash exactly like the chromatic aberration above.
+    uHitFlash: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -50,6 +59,8 @@ const PostFXShader = {
     uniform float uReduceFlash;
     uniform float uTime;
     uniform vec2 uResolution;
+    uniform float uSpeedFrac;
+    uniform float uHitFlash;
 
     varying vec2 vUv;
 
@@ -83,14 +94,31 @@ const PostFXShader = {
       float crimsonMix = clamp(hullVig * 0.9 + uDamagePulse * baseVig * 0.35, 0.0, 1.0);
       color = mix(color, vec3(0.55, 0.02, 0.05), crimsonMix);
 
+      // Speed tunnel: peripheral darkening that deepens with the chase camera's own
+      // speed-driven FOV, so velocity reads in the corner of the eye without any colour
+      // shift (stays legible in every colourblind mode, and never flashes, so it needs no
+      // reduceFlash gate).
+      float speedVig = smoothstep(0.25, 1.0, dist) * uSpeedFrac * 0.35;
+      color *= 1.0 - speedVig;
+
       // Subtle animated grain, capped further under reduceFlash.
       float grain = (grainHash(vUv * uResolution.xy + uTime) - 0.5) * 0.03 * (1.0 - uReduceFlash * 0.5);
       color += grain;
+
+      // Hit flash: a fast warm radial punch layered on top of the damage pulse's slower CA/
+      // vignette response. Hard-gated to zero under reduceFlash, never merely dimmed.
+      float hitFlash = uHitFlash * (1.0 - uReduceFlash);
+      color += vec3(1.0, 0.85, 0.72) * hitFlash * (1.0 - dist * 0.7) * 0.4;
 
       gl_FragColor = vec4(color, 1.0);
     }
   `,
 };
+
+/** Seconds for the hit-flash punch to fully decay back to zero. */
+const HIT_FLASH_DECAY = 0.28;
+/** setDamagePulse jump larger than this counts as a fresh hit rather than settling noise. */
+const HIT_FLASH_TRIGGER = 0.35;
 
 export class RenderSystem {
   readonly renderer: THREE.WebGLRenderer;
@@ -130,6 +158,11 @@ export class RenderSystem {
   private lastPrograms = 0;
   private lastFrameMs = 0;
 
+  // Hit-flash: a short, self-decaying punch triggered by a rising edge on setDamagePulse,
+  // tracked independently of the pulse's own (slower) decay so a hit still reads as a jolt.
+  private prevDamagePulse = 0;
+  private hitFlashValue = 0;
+
   private readonly onContextLost = (e: Event): void => {
     // Without preventDefault the browser treats the context as permanently gone and
     // never fires 'webglcontextrestored'.
@@ -164,6 +197,13 @@ export class RenderSystem {
     // opening up a third of a stop is what lets the nebula cores and engine glow actually
     // reach the bloom threshold instead of sitting just under it.
     this.renderer.toneMappingExposure = RENDER.exposure;
+
+    // Atmospheric depth cueing: automatic for every MeshStandardMaterial in the scene (the ship
+    // hulls, chiefly), so distance genuinely reads without any per-object wiring. Density is low
+    // enough that normal dogfighting ranges (well under ARENA.radius) stay essentially unfogged;
+    // see palette.ts's depthFogColor/DEPTH_FOG_DENSITY, the single source of truth other systems
+    // (e.g. arena.ts's asteroid shader, which bypasses automatic fog) share so nothing disagrees.
+    this.scene.fog = new THREE.FogExp2(depthFogColor().getHex(), DEPTH_FOG_DENSITY);
 
     this.domElement = this.renderer.domElement;
     container.appendChild(this.domElement);
@@ -317,6 +357,19 @@ export class RenderSystem {
     this.clock = (this.clock + rawDt) % 1000;
     this.postPass.uniforms.uTime.value = this.clock;
 
+    // Speed vignette: derived straight from the chase camera's own speed-driven FOV (the camera
+    // and this renderer share the same THREE.PerspectiveCamera instance), so no gameplay system
+    // needs to feed velocity into the render layer separately.
+    const fovRange = Math.max(CAMERA.fovBoost - CAMERA.fovBase, 1e-4);
+    this.postPass.uniforms.uSpeedFrac.value = clamp01((this.camera.fov - CAMERA.fovBase) / fovRange);
+
+    this.hitFlashValue = Math.max(0, this.hitFlashValue - rawDt / HIT_FLASH_DECAY);
+    this.postPass.uniforms.uHitFlash.value = this.reduceFlash ? 0 : this.hitFlashValue;
+
+    // Depth-fog colour tracks the active palette (sector/colourblind-mode changes) automatically
+    // — cheap enough to just refresh every frame rather than needing a change notification.
+    (this.scene.fog as THREE.FogExp2).color.copy(depthFogColor());
+
     // autoReset is off (see constructor) so this reset is the only one per frame --
     // otherwise each internal pass's own renderer.render() call would clobber the
     // previous pass's counts and `stats` would only ever show the last pass.
@@ -349,7 +402,14 @@ export class RenderSystem {
   }
 
   setDamagePulse(value: number): void {
-    this.postPass.uniforms.uDamagePulse.value = clamp01(value);
+    const clamped = clamp01(value);
+    // A rising edge big enough to be a fresh hit (rather than settling noise on an already-high
+    // pulse) kicks the independent hit-flash punch; a reset to zero clears it immediately so nothing
+    // lingers into the next run.
+    if (clamped <= 0) this.hitFlashValue = 0;
+    else if (clamped - this.prevDamagePulse > HIT_FLASH_TRIGGER) this.hitFlashValue = 1;
+    this.prevDamagePulse = clamped;
+    this.postPass.uniforms.uDamagePulse.value = clamped;
   }
 
   setLowHullVignette(value: number): void {

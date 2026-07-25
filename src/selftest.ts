@@ -440,14 +440,14 @@ const flightUp = new THREE.Vector3();
 const flightForward = new THREE.Vector3();
 
 /**
- * The invariant the whole flight model exists to guarantee: **the ship never ends up
- * inverted.** This is not a style preference — an upside-down player in a 3D arena has lost
- * their frame of reference and, per DESIGN §2, that is where this genre loses people. The
- * clamp lives in the model rather than in a corrective nudge, so the test is allowed to be
- * strict: hold full nose-up for a minute and the ship's own up vector must stay in the upper
- * hemisphere for every single step.
+ * The invariant the flight model now guarantees is the opposite of what it used to: pitch is
+ * unlimited. Holding nose-up must carry the ship smoothly all the way over the top and back
+ * around into a full loop — no stop, no snap, no NaN, and the orientation quaternion must stay
+ * a valid unit quaternion throughout. Once the loop is over and the stick is released, gentle
+ * auto-level must settle any bank picked up along the way back to level flight, without ever
+ * yanking the ship while it was still pitching.
  */
-function testFlightNeverInverts(): void {
+function testFlightLoopsWithoutInverting(): void {
   const player = createPlayerState({
     hullId: 'starfall',
     primary: 'pulseRepeater',
@@ -457,49 +457,78 @@ function testFlightNeverInverts(): void {
   const flight = new FlightModel();
   const input = new ScriptedInput();
 
-  let worstUpY = 1;
-  let worstPitch = 0;
+  const startForward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
 
-  // Full nose-up and full throttle, held far longer than any loop would take. An integrating
-  // model would have gone over the top within a couple of seconds.
+  // Full nose-up and full throttle, held for as long as a full loop takes.
   input.aimY = 1;
   input.steering = true;
   input.throttle = 1;
 
-  for (let i = 0; i < 60 * 120; i++) {
+  let sawNaN = false;
+  let maxNormError = 0;
+  let sawInverted = false;
+  let hasLeftStart = false;
+  let loopSteps = -1;
+
+  const maxSteps = 10 * 120;
+  for (let i = 0; i < maxSteps && loopSteps < 0; i++) {
     flight.update(player, input, STEP, 520, 1, null, 0);
-    flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
-    flightForward.set(0, 0, -1).applyQuaternion(player.quaternion);
-    if (flightUp.y < worstUpY) worstUpY = flightUp.y;
-    const pitch = Math.asin(Math.max(-1, Math.min(1, flightForward.y)));
-    if (Math.abs(pitch) > Math.abs(worstPitch)) worstPitch = pitch;
+
+    const q = player.quaternion;
+    if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || !Number.isFinite(q.z) || !Number.isFinite(q.w)) {
+      sawNaN = true;
+      break;
+    }
+    const norm = Math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    maxNormError = Math.max(maxNormError, Math.abs(norm - 1));
+
+    flightUp.set(0, 1, 0).applyQuaternion(q);
+    if (flightUp.y < -0.3) sawInverted = true;
+
+    flightForward.set(0, 0, -1).applyQuaternion(q);
+    const dot = Math.max(-1, Math.min(1, startForward.dot(flightForward)));
+    if (!hasLeftStart) {
+      if (dot < 0.9) hasLeftStart = true;
+    } else if (dot > 0.999) {
+      loopSteps = i;
+    }
   }
 
+  check('sustained nose-up never produces NaN', !sawNaN);
   check(
-    'sustained nose-up never inverts the ship',
-    worstUpY > 0.1,
-    `min up.y=${worstUpY.toFixed(3)} (must stay well above 0)`,
+    'orientation quaternion stays normalized',
+    maxNormError < 1e-4,
+    `max |‖q‖-1| = ${maxNormError.toExponential(2)}`,
   );
+  check('the loop genuinely inverts the ship at the top — no hidden clamp', sawInverted);
   check(
-    'pitch stays short of vertical',
-    Math.abs(worstPitch) < Math.PI / 2 - 0.1,
-    `peak pitch=${((worstPitch * 180) / Math.PI).toFixed(1)}°`,
+    'sustained nose-up completes a full loop back to the start heading',
+    loopSteps >= 0,
+    loopSteps >= 0 ? `closed the loop in ${(loopSteps / 120).toFixed(2)}s` : 'never returned to the start heading',
   );
 
-  // Same again nose-down, since the clamp is two-sided.
-  flight.reset();
-  player.quaternion.identity();
-  input.aimY = -1;
-  worstUpY = 1;
-  for (let i = 0; i < 60 * 120; i++) {
-    flight.update(player, input, STEP, 520, 1, null, 0);
-    flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
-    if (flightUp.y < worstUpY) worstUpY = flightUp.y;
-  }
+  // Bank the ship hard mid-flight, then let go of everything and confirm auto-level brings it
+  // back to level — but only once, after the roll input actually stops.
+  input.aimY = 0;
+  input.steering = false;
+  input.roll = 1;
+  for (let i = 0; i < 40; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+  input.roll = 0;
+
+  for (let i = 0; i < 4 * 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+
+  flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
+  flightForward.set(0, 0, -1).applyQuaternion(player.quaternion);
+  // Compare against world-up projected into the ship's own plane, not raw world-up, since a
+  // level ship pitched away from the horizon still has its up vector tilted off (0,1,0).
+  const projectedUp = new THREE.Vector3(0, 1, 0)
+    .addScaledVector(flightForward, -flightForward.dot(new THREE.Vector3(0, 1, 0)))
+    .normalize();
+  const levelError = Math.acos(Math.max(-1, Math.min(1, flightUp.dot(projectedUp))));
   check(
-    'sustained nose-down never inverts the ship',
-    worstUpY > 0.1,
-    `min up.y=${worstUpY.toFixed(3)}`,
+    'auto-level settles bank back to level once roll is released',
+    levelError < 0.05,
+    `${((levelError * 180) / Math.PI).toFixed(2)}° of residual bank after settling`,
   );
 }
 
@@ -740,7 +769,7 @@ export function runSelfTest(): TestResult[] {
   testMetaGrantsOptionsNotPower();
   testCorePrimitives();
   testRngDeterminism();
-  testFlightNeverInverts();
+  testFlightLoopsWithoutInverting();
   testFlightHoldsHeadingWhenReleased();
   testLockAssistConvergesAndYields();
   testLeadTargetPrediction();
