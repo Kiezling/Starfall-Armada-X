@@ -27,6 +27,10 @@ import { createDefaultMeta } from './core/save';
 import { SpatialGrid } from './core/spatial';
 import { Pool } from './core/pool';
 import { GameClock } from './core/time';
+import * as THREE from 'three';
+import { FlightModel } from './ship/flight';
+import { createPlayerState } from './ship/player';
+import type { InputAction, InputState } from './core/types';
 
 export interface TestResult {
   name: string;
@@ -403,6 +407,178 @@ function testRngDeterminism(): void {
 
 /* ------------------------------------------------------------------------------------------- */
 
+/**
+ * A scriptable stand-in for InputManager. The flight model reads nothing else, so this is the
+ * whole surface needed to fly the ship headlessly.
+ */
+class ScriptedInput implements InputState {
+  aimX = 0;
+  aimY = 0;
+  steering = false;
+  throttle = 0;
+  strafe = 0;
+  roll = 0;
+  private readonly held = new Set<InputAction>();
+
+  hold(action: InputAction, down: boolean): void {
+    if (down) this.held.add(action);
+    else this.held.delete(action);
+  }
+
+  isDown(action: InputAction): boolean {
+    return this.held.has(action);
+  }
+
+  wasPressed(): boolean {
+    return false;
+  }
+}
+
+const STEP = 1 / 120;
+const flightUp = new THREE.Vector3();
+const flightForward = new THREE.Vector3();
+
+/**
+ * The invariant the whole flight model exists to guarantee: **the ship never ends up
+ * inverted.** This is not a style preference — an upside-down player in a 3D arena has lost
+ * their frame of reference and, per DESIGN §2, that is where this genre loses people. The
+ * clamp lives in the model rather than in a corrective nudge, so the test is allowed to be
+ * strict: hold full nose-up for a minute and the ship's own up vector must stay in the upper
+ * hemisphere for every single step.
+ */
+function testFlightNeverInverts(): void {
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const flight = new FlightModel();
+  const input = new ScriptedInput();
+
+  let worstUpY = 1;
+  let worstPitch = 0;
+
+  // Full nose-up and full throttle, held far longer than any loop would take. An integrating
+  // model would have gone over the top within a couple of seconds.
+  input.aimY = 1;
+  input.steering = true;
+  input.throttle = 1;
+
+  for (let i = 0; i < 60 * 120; i++) {
+    flight.update(player, input, STEP, 520, 1, null, 0);
+    flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
+    flightForward.set(0, 0, -1).applyQuaternion(player.quaternion);
+    if (flightUp.y < worstUpY) worstUpY = flightUp.y;
+    const pitch = Math.asin(Math.max(-1, Math.min(1, flightForward.y)));
+    if (Math.abs(pitch) > Math.abs(worstPitch)) worstPitch = pitch;
+  }
+
+  check(
+    'sustained nose-up never inverts the ship',
+    worstUpY > 0.1,
+    `min up.y=${worstUpY.toFixed(3)} (must stay well above 0)`,
+  );
+  check(
+    'pitch stays short of vertical',
+    Math.abs(worstPitch) < Math.PI / 2 - 0.1,
+    `peak pitch=${((worstPitch * 180) / Math.PI).toFixed(1)}°`,
+  );
+
+  // Same again nose-down, since the clamp is two-sided.
+  flight.reset();
+  player.quaternion.identity();
+  input.aimY = -1;
+  worstUpY = 1;
+  for (let i = 0; i < 60 * 120; i++) {
+    flight.update(player, input, STEP, 520, 1, null, 0);
+    flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
+    if (flightUp.y < worstUpY) worstUpY = flightUp.y;
+  }
+  check(
+    'sustained nose-down never inverts the ship',
+    worstUpY > 0.1,
+    `min up.y=${worstUpY.toFixed(3)}`,
+  );
+}
+
+/**
+ * Releasing the steering keys must *hold the heading*, not drift. On a keyboard the axes rest
+ * at exactly zero, so any residual turn would be the model's own doing — and a nose that
+ * wanders on its own is unusable for aiming.
+ */
+function testFlightHoldsHeadingWhenReleased(): void {
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const flight = new FlightModel();
+  const input = new ScriptedInput();
+
+  // Turn for a second, then let go and coast for five.
+  input.aimX = 1;
+  input.steering = true;
+  for (let i = 0; i < 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+
+  input.aimX = 0;
+  input.steering = false;
+  for (let i = 0; i < 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+
+  const settled = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+  for (let i = 0; i < 600; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+  const after = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+
+  const drift = Math.acos(Math.max(-1, Math.min(1, settled.dot(after))));
+  check(
+    'heading holds when steering is released',
+    drift < 0.01,
+    `${((drift * 180) / Math.PI).toFixed(3)}° of drift over 5s`,
+  );
+}
+
+/**
+ * The lock assist must converge the nose onto the target *and* stand down the moment the
+ * player steers. Both halves matter: the first is the whole reason a keyboard player can
+ * fight, the second is what stops the assist from fighting them for control.
+ */
+function testLockAssistConvergesAndYields(): void {
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const flight = new FlightModel();
+  const input = new ScriptedInput();
+
+  // A target 60° off the nose and slightly above.
+  const dir = new THREE.Vector3(Math.sin(1.05), 0.25, -Math.cos(1.05)).normalize();
+  for (let i = 0; i < 240; i++) flight.update(player, input, STEP, 520, 1, dir, 1);
+
+  const nose = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+  const error = Math.acos(Math.max(-1, Math.min(1, nose.dot(dir))));
+  check(
+    'hard lock converges the nose onto the target',
+    error < 0.02,
+    `${((error * 180) / Math.PI).toFixed(2)}° off after 2s`,
+  );
+
+  // Now steer away: the assist must not claw the nose back.
+  input.aimX = -1;
+  input.steering = true;
+  const before = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+  for (let i = 0; i < 120; i++) flight.update(player, input, STEP, 520, 1, dir, 1);
+  const moved = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+  const turned = Math.acos(Math.max(-1, Math.min(1, before.dot(moved))));
+  check(
+    'manual steering overrides the lock assist',
+    turned > 0.5,
+    `turned ${((turned * 180) / Math.PI).toFixed(1)}° against the lock`,
+  );
+}
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -416,5 +592,8 @@ export function runSelfTest(): TestResult[] {
   testMetaGrantsOptionsNotPower();
   testCorePrimitives();
   testRngDeterminism();
+  testFlightNeverInverts();
+  testFlightHoldsHeadingWhenReleased();
+  testLockAssistConvergesAndYields();
   return results;
 }

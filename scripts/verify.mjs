@@ -163,37 +163,37 @@ const glInfo = await page.evaluate(() => {
 
 let flying = false;
 if (flag('--play')) {
-  console.log('[verify] driving input...');
-  await page.mouse.move(640, 360);
-  await page.mouse.click(640, 360);
-  await page.waitForTimeout(400);
-  // Dismiss a title screen if one is present.
+  console.log('[verify] driving input (keyboard only)...');
+  // Deliberately no mouse input anywhere in this routine. The game is keyboard-first, and a
+  // harness that steers with the pointer would never exercise what players actually use.
   await page.keyboard.press('Enter');
   await page.waitForTimeout(600);
-  // Fire continuously, but do NOT hold throttle for the whole soak: flying straight for
-  // seconds pins the ship against the arena wall, which leaves every screenshot under the
-  // boundary-danger vignette and hides whatever the shot was meant to show.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+
   await page.keyboard.down('Space');
+  await page.keyboard.down('KeyT'); // Hold lock, so the shot frames a real engagement.
   flying = true;
   void (async () => {
     // Bank around the arena instead of charging out of it: short throttle bursts with
     // alternating turns, which also exercises steering, strafe, and drift.
     const turns = [
-      ['KeyW', 900, 900, 300],
-      ['KeyA', 500, 400, 420],
-      ['KeyW', 700, 1180, 260],
-      ['KeyD', 500, 300, 460],
+      ['KeyW', 'ArrowLeft', 900],
+      ['KeyA', 'ArrowUp', 450],
+      ['KeyW', 'ArrowRight', 700],
+      ['KeyD', 'ArrowDown', 450],
     ];
     while (flying) {
-      for (const [key, hold, mx, my] of turns) {
+      for (const [move, turn, hold] of turns) {
         if (!flying) return;
-        await page.keyboard.down(key).catch(() => {});
-        await page.mouse.move(mx, my, { steps: 8 }).catch(() => {});
+        await page.keyboard.down(move).catch(() => {});
+        await page.keyboard.down(turn).catch(() => {});
         await page.waitForTimeout(hold).catch(() => {});
-        await page.keyboard.up(key).catch(() => {});
+        await page.keyboard.up(move).catch(() => {});
+        await page.keyboard.up(turn).catch(() => {});
       }
       if (!flying) return;
-      await page.keyboard.press('ControlLeft').catch(() => {});
+      await page.keyboard.press('KeyX').catch(() => {});
     }
   })();
 }

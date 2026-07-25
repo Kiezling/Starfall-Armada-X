@@ -36,6 +36,12 @@ const ACTION_ORDER: readonly InputAction[] = Object.keys(DEFAULT_KEYBINDS) as In
 const ACTION_LABELS: Record<InputAction, string> = {
   firePrimary: 'Fire Primary',
   fireSecondary: 'Fire Secondary',
+  pitchUp: 'Nose Up',
+  pitchDown: 'Nose Down',
+  yawLeft: 'Turn Left',
+  yawRight: 'Turn Right',
+  lockTarget: 'Hold Lock',
+  swapWeapon: 'Swap Weapon',
   throttleUp: 'Throttle Up',
   throttleDown: 'Throttle Down',
   strafeLeft: 'Strafe Left',
@@ -48,6 +54,28 @@ const ACTION_LABELS: Record<InputAction, string> = {
   reroll: 'Reroll Draft',
   pause: 'Pause',
 };
+
+/**
+ * The controls card shown under the title actions.
+ *
+ * This game is keyboard-only by design, and the two things a new pilot will not discover on
+ * their own are that the arrow cluster flies the nose and that holding lock is what makes
+ * hitting a moving target realistic. Both are here, in reading order, with lock called out.
+ * Grouped by hand, so the card doubles as a picture of where to put your fingers.
+ */
+const CONTROL_ROWS: readonly (readonly [string, string])[] = [
+  ['\u2190 \u2191 \u2192 \u2193', 'Steer the nose  (or I J K L)'],
+  ['W  S', 'Throttle forward / back'],
+  ['A  D', 'Strafe sideways'],
+  ['Q  E', 'Roll'],
+  ['SPACE  /', 'Fire primary'],
+  ['C  .', 'Fire secondary'],
+  ['T  ,', 'HOLD LOCK \u2014 tracks the target for you'],
+  ['TAB  M', 'Switch target'],
+  ['SHIFT', 'Boost'],
+  ['X  R-CTRL', 'Drift \u2014 swing the nose off your heading'],
+  ['ESC  P', 'Pause'],
+];
 
 const DIFFICULTY_LABELS: readonly string[] = ['Cadet', 'Pilot', 'Ace', 'Nightmare'];
 const AIM_ASSIST_LABELS: readonly string[] = ['Off', 'Light', 'Strong'];
@@ -156,6 +184,7 @@ export class Menus {
     this.titleStatScore = this.buildStat(titleStats, 'Best Score');
     this.titleStatRuns = this.buildStat(titleStats, 'Runs Flown');
     this.titleActions = make('div', 'menu-actions', this.titlePanel);
+    this.buildControlsCard(this.titlePanel);
 
     // --- Pause -------------------------------------------------------------------------------
     this.pausePanel = make('div', 'menu-panel', this.root);
@@ -194,6 +223,17 @@ export class Menus {
 
     this.hideAllPanels();
     this.applyPalette();
+  }
+
+  /** Renders the static controls reference. Built once; nothing here updates per frame. */
+  private buildControlsCard(parent: HTMLElement): void {
+    const card = make('div', 'menu-controls', parent);
+    make('div', 'menu-controls-title', card).textContent = 'CONTROLS — KEYBOARD ONLY, NO MOUSE NEEDED';
+    const grid = make('div', 'menu-controls-grid', card);
+    for (const [keys, label] of CONTROL_ROWS) {
+      make('div', 'menu-controls-key', grid).textContent = keys;
+      make('div', 'menu-controls-label', grid).textContent = label;
+    }
   }
 
   private buildStat(parent: HTMLElement, label: string): HTMLDivElement {

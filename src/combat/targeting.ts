@@ -25,10 +25,15 @@ const LOCK_CONE = 0.5;
 /** A challenger must be this much better aligned before it steals an existing lock. */
 const STICKINESS = 0.06;
 
+/**
+ * Assist cone half-angles. Sized for a keyboard: steering resolution is coarser than a mouse's,
+ * so a near-miss that would be a hit with a pointer has to be forgiven, or the game reads as
+ * unresponsive rather than difficult. Off is still genuinely off.
+ */
 const AIM_ASSIST_RADIANS: Record<number, number> = {
   [AimAssist.Off]: 0,
-  [AimAssist.Light]: 0.0436, // 2.5°
-  [AimAssist.Strong]: 0.1047, // 6°
+  [AimAssist.Light]: 0.0698, // 4°
+  [AimAssist.Strong]: 0.1571, // 9°
 };
 
 const forward = /*#__PURE__*/ new THREE.Vector3();

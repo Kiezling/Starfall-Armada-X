@@ -39,8 +39,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 18,
     shield: 0,
     radius: 1.6,
-    speed: 140,
-    turnRate: 4.2,
+    speed: 86,
+    turnRate: 2.9,
     engageRange: 12,
     fireRange: 14,
     fireInterval: 0.6,
@@ -60,8 +60,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 55,
     shield: 20,
     radius: 2.4,
-    speed: 120,
-    turnRate: 2.6,
+    speed: 94,
+    turnRate: 2.1,
     engageRange: 90,
     fireRange: 130,
     fireInterval: 0.5,
@@ -80,8 +80,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 45,
     shield: 0,
     radius: 2.6,
-    speed: 45,
-    turnRate: 1.6,
+    speed: 40,
+    turnRate: 1.3,
     engageRange: 320,
     fireRange: 320,
     fireInterval: 3.2,
@@ -101,8 +101,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 190,
     shield: 60,
     radius: 4.4,
-    speed: 55,
-    turnRate: 1.7,
+    speed: 48,
+    turnRate: 1.4,
     engageRange: 140,
     fireRange: 150,
     fireInterval: 1.1,
@@ -121,8 +121,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 260,
     shield: 40,
     radius: 7.0,
-    speed: 38,
-    turnRate: 0.9,
+    speed: 34,
+    turnRate: 0.8,
     engageRange: 260,
     fireRange: 200,
     fireInterval: 2.6,
@@ -141,8 +141,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     hull: 90,
     shield: 20,
     radius: 2.5,
-    speed: 70,
-    turnRate: 2.0,
+    speed: 58,
+    turnRate: 1.6,
     engageRange: 180,
     fireRange: 150,
     fireInterval: 2.2,
@@ -531,7 +531,11 @@ export function buildEnemyMaterial(id: EnemyTypeId): THREE.Material {
       roughness: 0.55,
       metalness: 0.3,
       emissive: new THREE.Color(p.enemyAccent),
-      emissiveIntensity: 0.35,
+      // Raised well past the old 0.35: an enemy is a *target* first and a model second, and
+      // against a nebula backdrop a dark hull with a faint tint simply disappears. This puts
+      // the accent geometry over the bloom threshold so every hostile carries its own glow and
+      // can be picked out at range without relying on the radar.
+      emissiveIntensity: 1.5,
     });
     materialCache.set(id, mat);
   }
@@ -551,7 +555,7 @@ export function buildEliteMaterial(id: EnemyTypeId): THREE.Material {
       roughness: 0.3,
       metalness: 0.5,
       emissive: new THREE.Color(p.eliteAura),
-      emissiveIntensity: 0.9,
+      emissiveIntensity: 2.2,
     });
     eliteMaterialCache.set(id, mat);
   }

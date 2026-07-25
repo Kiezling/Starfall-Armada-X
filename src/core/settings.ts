@@ -12,24 +12,64 @@ import { STORAGE } from './constants';
 import { clamp, clamp01 } from './math';
 
 /**
- * KeyboardEvent.code bindings, per DESIGN.md §4. `Tab`/`Space`/arrows are also the codes
- * input.ts prevents default browser behaviour for, since those are the ones a browser would
- * otherwise intercept (scrolling, focus traversal).
+ * KeyboardEvent.code bindings, per DESIGN.md §4.
+ *
+ * The layout is built for two hands on a keyboard and **no pointer of any kind**. The left
+ * hand owns the ship's body on WASD — throttle, strafe, roll — and the right hand owns the
+ * nose on the arrow cluster. Every verb either sits under a resting finger or has an
+ * alternate in `ALT_KEYBINDS` that does.
+ *
+ * `Tab`/`Space`/arrows/`Slash` are also the codes input.ts prevents default browser behaviour
+ * for, since those are the ones a browser would otherwise intercept (scrolling, focus
+ * traversal, quick-find).
  */
 export const DEFAULT_KEYBINDS: Record<InputAction, string> = {
   firePrimary: 'Space',
-  fireSecondary: 'ShiftLeft',
+  fireSecondary: 'KeyC',
+  pitchUp: 'ArrowUp',
+  pitchDown: 'ArrowDown',
+  yawLeft: 'ArrowLeft',
+  yawRight: 'ArrowRight',
   throttleUp: 'KeyW',
   throttleDown: 'KeyS',
   strafeLeft: 'KeyA',
   strafeRight: 'KeyD',
   rollLeft: 'KeyQ',
   rollRight: 'KeyE',
-  boost: 'KeyF',
-  drift: 'ControlLeft',
+  boost: 'ShiftLeft',
+  drift: 'KeyX',
   cycleTarget: 'Tab',
+  lockTarget: 'KeyT',
+  swapWeapon: 'KeyF',
   reroll: 'KeyR',
   pause: 'Escape',
+};
+
+/**
+ * Fixed second bindings, not remappable and not shown in the rebind list.
+ *
+ * Two hand positions are common and neither should be second-class: WASD + arrows (left hand
+ * on the body, right hand on the nose), and WASD + IJKL (both hands on the home row). These
+ * alternates make the second layout work and put fire/boost/drift/lock within reach of the
+ * arrow hand too, so a player can steer and shoot without either hand travelling.
+ *
+ * A binding here is ignored whenever the player has deliberately rebound another action onto
+ * the same key — an explicit remap always beats a built-in convenience.
+ */
+export const ALT_KEYBINDS: Partial<Record<InputAction, string>> = {
+  firePrimary: 'Slash',
+  fireSecondary: 'Period',
+  pitchUp: 'KeyI',
+  pitchDown: 'KeyK',
+  yawLeft: 'KeyJ',
+  yawRight: 'KeyL',
+  rollLeft: 'KeyU',
+  rollRight: 'KeyO',
+  boost: 'ShiftRight',
+  drift: 'ControlRight',
+  cycleTarget: 'KeyM',
+  lockTarget: 'Comma',
+  pause: 'KeyP',
 };
 
 /** The only action names a keybind entry may legally refer to. */
@@ -50,7 +90,7 @@ export function createDefaultSettings(): Settings {
     showDamageNumbers: true,
 
     colorblind: ColorblindMode.Default,
-    aimAssist: AimAssist.Light,
+    aimAssist: AimAssist.Strong,
     difficulty: Difficulty.Pilot,
 
     invertY: false,

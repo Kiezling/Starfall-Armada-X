@@ -53,24 +53,59 @@ the Armada. Silence between waves, pressure during them.
 
 ## 4. Controls
 
-Mouse steers a **flight reticle**; the ship flies toward it with a lag that reads as inertia.
+**Keyboard-first, pointer-free.** The design constraint is absolute: everything the game asks
+of a player must be reachable from two hands on a keyboard, with no mouse present. That is not
+an accessibility bolt-on — it changes the flight model, the aiming model, and the HUD, and each
+of those is designed around it below.
+
+The left hand flies the ship's *body* on WASD; the right hand flies its *nose* on the arrow
+cluster. `I J K L` mirrors the arrows for players who prefer both hands on the home row, and
+the arrow hand gets its own fire/boost/drift/lock keys so neither hand has to travel.
 
 | Input | Action |
 |---|---|
-| Mouse | Steer (pitch/yaw toward reticle) |
-| Left mouse / `Space` | Fire primary (heat-limited, no ammo) |
-| Right mouse / `Shift` | Fire secondary (cooldown + charges) |
+| `↑` `↓` `←` `→` (or `I J K L`) | Steer the nose (pitch / yaw) |
+| `Space` (or `/`) | Fire primary (heat-limited, no ammo) |
+| `C` (or `.`) | Fire secondary (cooldown + charges) |
 | `W` / `S` | Throttle up / down |
 | `A` / `D` | Lateral strafe |
-| `Q` / `E` | Manual roll |
-| `LCtrl` | **Drift** — decouple heading from velocity for 1.5 s (the skill-expression move) |
-| `Tab` | Cycle locked target |
+| `Q` / `E` (or `U` / `O`) | Manual roll |
+| `T` (or `,`) | **Hold lock** — nose tracking assist at full authority |
+| `Tab` (or `M`) | Cycle locked target |
+| `LShift` (or `RShift`) | Boost |
+| `X` (or `RCtrl`) | **Drift** — decouple heading from velocity for 1.5 s |
+| `F` | Swap weapon (Wraith) |
 | `R` | Reroll draft (once per draft) |
 | `Esc` / `P` | Pause |
 | Gamepad | Full support: sticks steer/strafe, triggers fire, bumpers drift/target |
 
-**Auto-levelling:** roll returns to arena-up over ~1.2 s whenever manual roll is not held. The
-player can never end up inverted and confused.
+**Steering axes.** Held keys feed a spring, so the nose eases in and out and reads as analog
+rather than digital. The axes rest at *exactly* zero, which is the property that matters:
+releasing the keys holds the current heading. (The original mouse model had no rest position —
+with no pointer, the axes sat wherever the cursor last happened to be, and the ship pitched
+continuously until it flipped. That is the bug this layout exists to make impossible.)
+
+**No inversion, structurally.** Orientation is stored as three scalars — heading, pitch, bank —
+and rebuilt into a quaternion every step rather than integrated onto the previous one. Pitch is
+hard-clamped at ±78°, so the nose cannot carry over the top; bank always has a true level to
+return to, because it is measured rather than accumulated. Roll auto-levels over ~1.2 s
+whenever manual roll is not held, and manual roll still has full ±180° authority on top of the
+level frame, so barrel rolls work — they simply always unwind.
+
+**Hold lock** is the keyboard's answer to a mouse's aiming resolution. With a target locked,
+the ship converges its nose on the *intercept point* (where the target will be when the shot
+lands) at a bounded rate. Two rules keep it honest:
+
+1. It **yields entirely to manual steering** — the instant a steering key goes down, the assist
+   contributes nothing. It can never fight the player for the nose.
+2. It is **rate-limited, not a snap** — capped below the ship's own turn rate, so a fast
+   crossing target still has to be flown to. The HUD fills a ring around the lock bracket as
+   the assist approaches that cap, which is the cue to turn and help it.
+
+Aim assist (the shot-bending cone, separate from the tracking assist) defaults to Strong and is
+still a Settings option down to Off. Cone half-angles are sized for keyboard steering
+resolution: a near-miss that a mouse would have made must be forgiven, or coarse input reads as
+an unresponsive game rather than a hard one.
 
 **Drift** is the depth mechanic. Holding it lets the ship keep its velocity vector while the nose
 swings freely — the space equivalent of a handbrake turn, and the only way to keep guns on a
@@ -304,7 +339,8 @@ This is a *requirements list*, not a nice-to-have.
 - Hit-stop intensity: 0–100%
 - Flash/bloom reduction toggle (removes strobing, caps bloom)
 - Colourblind palettes: Default / Deuteranopia / Protanopia / Tritanopia
-- Aim assist: Off / Light / Strong (magnetism on the reticle, not auto-fire)
+- Aim assist: Off / Light / Strong — shot-bending magnetism, never auto-fire. Defaults to
+  Strong, since keyboard steering is coarser than a pointer and the game has to forgive that.
 - Difficulty: **Cadet** (0.7× enemy damage, 1.3× player hull) / **Pilot** (baseline) /
   **Ace** (1.3× damage, +30% enemy count) / **Nightmare** (1.6× damage, elite modifiers on all waves)
 - Full keyboard remapping, persisted.
@@ -361,7 +397,7 @@ src/
 │   ├── pool.ts                 generic object pool
 │   ├── events.ts               typed event bus
 │   ├── time.ts                 fixed timestep, timescale, hit-stop
-│   ├── input.ts                keyboard/mouse/gamepad + remapping
+│   ├── input.ts                keyboard-first (+ optional mouse/gamepad), remapping
 │   ├── spatial.ts              uniform-grid broad phase
 │   ├── settings.ts             user settings + persistence
 │   └── save.ts                 meta-progression persistence
@@ -431,5 +467,5 @@ src/
 - A full run is completable: title → 3 sectors → 3 bosses → loop or death → hangar → new run.
 - 60 fps at 1080p with 200+ live entities on integrated graphics.
 - Every item in `CHECKLIST.md` is ticked.
-- The game is playable with mouse+keyboard and with a gamepad, and readable in every
+- The game is fully playable on the keyboard alone, and with a gamepad, and readable in every
   colourblind mode.

@@ -85,6 +85,14 @@ export const PLAYER = {
 
   /** Distance the reticle sits in front of the ship, for aim projection. */
   reticleDistance: 300,
+
+  /* Lock-on tracking assist (see FlightModel.applyTrackingAssist) ---------------------------- */
+  /** Proportional gain, in 1/seconds, converging the nose onto the locked intercept point. */
+  trackConvergence: 3.2,
+  /** Assist rate ceiling as a fraction of the ship's own turn rate, at full lock strength. */
+  trackMaxRateFraction: 0.85,
+  /** Assist authority while a target is merely locked, with hard lock *not* held. */
+  softLockStrength: 0.4,
 } as const;
 
 /* Camera ------------------------------------------------------------------------------------ */
@@ -208,9 +216,16 @@ export const DIFFICULTY_MODS = [
 export const RENDER = {
   /** Device pixel ratio is capped here; beyond this the cost is not worth the sharpness. */
   maxPixelRatio: 2,
-  bloomStrength: 0.85,
-  bloomRadius: 0.5,
-  bloomThreshold: 0.62,
+  bloomStrength: 1.15,
+  bloomRadius: 0.72,
+  /**
+   * Low on purpose. Bloom is doing structural work here, not gilding: emissives, engine
+   * nozzles, projectile bolts, and nebula cores all sit just above this, so they bleed and
+   * read as light sources. Raising it back toward 0.6 makes the whole scene go inert.
+   */
+  bloomThreshold: 0.38,
+  /** ACES exposure. Slightly hot, to bring a deliberately dark palette up off the floor. */
+  exposure: 1.28,
   /** Bloom renders at this fraction of the main resolution. */
   bloomResolutionScale: 0.5,
 
@@ -227,6 +242,6 @@ export const RENDER = {
 /* Storage keys ------------------------------------------------------------------------------ */
 
 export const STORAGE = {
-  settings: 'starfall.settings.v1',
+  settings: 'starfall.settings.v2',
   meta: 'starfall.meta.v1',
 } as const;

@@ -160,6 +160,10 @@ export class RenderSystem {
     this.renderer.info.autoReset = false;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // ACES is conservative by default and this palette lives in the lower half of the range;
+    // opening up a third of a stop is what lets the nebula cores and engine glow actually
+    // reach the bloom threshold instead of sitting just under it.
+    this.renderer.toneMappingExposure = RENDER.exposure;
 
     this.domElement = this.renderer.domElement;
     container.appendChild(this.domElement);

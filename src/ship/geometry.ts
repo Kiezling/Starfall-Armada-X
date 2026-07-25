@@ -468,10 +468,73 @@ function buildNozzleThroat(radius: number, depth: number): THREE.BufferGeometry 
 }
 
 function buildNozzleGlow(radius: number, depth: number): THREE.BufferGeometry {
-  const geo = new THREE.ConeGeometry(radius, depth, 12, 1, true);
+  // 20 radial segments rather than 12: the plume is the brightest thing on the ship, and
+  // bloom turns a coarse silhouette into a visibly faceted star.
+  const geo = new THREE.ConeGeometry(radius, depth, 20, 1, true);
+  // Apex to +z. The nose points down -z, so the plume streams out behind the ship.
   geo.rotateX(Math.PI / 2);
+  // ConeGeometry is centred on its own axis, which would bury the throat — the hottest, most
+  // important half of the gradient — inside the fuselage. Shift it so z=0 is the throat and
+  // the whole plume sits aft of the nozzle where it can be seen.
+  geo.translate(0, 0, depth / 2);
   return geo;
 }
+
+/**
+ * The engine plume.
+ *
+ * Written as a shader rather than a translucent cone because the shape of the *gradient* is
+ * the effect: a white-hot throat that falls through the engine colour and out to nothing, with
+ * shock diamonds banded along it and a fast flicker. That gradient is also what feeds bloom —
+ * only the throat clears the threshold, so the glow blooms from a point and tapers, instead of
+ * the whole cone smearing into a lozenge.
+ *
+ * `toneMapped` is off and values run past 1.0 on purpose: this is a light source, and clamping
+ * it to display range is what makes engines look like painted-on triangles.
+ */
+const PLUME_VERTEX = /* glsl */ `
+  uniform float uDepth;
+  varying float vAxial;
+  varying float vRadial;
+  void main() {
+    // 0 at the throat, 1 at the tip of the cone (the geometry is translated so z=0 is throat).
+    vAxial = clamp(position.z / uDepth, 0.0, 1.0);
+    vRadial = length(position.xy);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const PLUME_FRAGMENT = /* glsl */ `
+  uniform vec3 uColor;
+  uniform vec3 uCore;
+  uniform float uThrottle;
+  uniform float uTime;
+  varying float vAxial;
+  varying float vRadial;
+
+  void main() {
+    // Length falls out of throttle: an idling engine is a stub, a boosting one is a spear.
+    float reach = mix(0.35, 1.0, uThrottle);
+    float along = vAxial / max(reach, 0.001);
+    if (along > 1.0) discard;
+
+    // Shock diamonds — the standing waves in a real supersonic exhaust. Tied to throttle so
+    // they only appear once the engine is actually working.
+    float diamonds = 0.5 + 0.5 * sin(along * 26.0 - uTime * 9.0);
+    diamonds = mix(1.0, 0.55 + diamonds * 0.75, uThrottle * 0.8);
+
+    // Combustion flicker: two detuned sines, so it never reads as a loop.
+    float flicker = 0.88 + 0.12 * sin(uTime * 41.0) * sin(uTime * 27.0 + 1.7);
+
+    // Hot core down the axis, cooling outward and along the length.
+    float axialFalloff = pow(1.0 - along, 1.7);
+    float core = pow(1.0 - along, 5.0);
+    vec3 col = mix(uColor, uCore, clamp(core * 1.4, 0.0, 1.0));
+
+    float intensity = axialFalloff * diamonds * flicker * (0.45 + uThrottle * 1.25);
+    gl_FragColor = vec4(col * (1.0 + core * 2.2), clamp(intensity, 0.0, 1.0));
+  }
+`;
 
 function buildCanopy(shape: HullShape): THREE.BufferGeometry {
   const geo = new THREE.SphereGeometry(1, 14, 10, 0, TAU, 0, Math.PI / 2);
@@ -592,7 +655,7 @@ class ShipVisualImpl implements ShipVisual {
   private readonly hullMaterial: THREE.MeshStandardMaterial;
   private readonly accentMaterial: THREE.MeshStandardMaterial;
   private readonly canopyMaterial: THREE.MeshStandardMaterial;
-  private readonly nozzleGlowMaterial: THREE.MeshBasicMaterial;
+  private readonly nozzleGlowMaterial: THREE.ShaderMaterial;
   private readonly nozzleGlowGeometry: THREE.BufferGeometry;
   private readonly nozzleGlowMeshes: THREE.Mesh[];
   private readonly elevonGeometry: THREE.BufferGeometry;
@@ -629,9 +692,11 @@ class ShipVisualImpl implements ShipVisual {
     this.accentMaterial = new THREE.MeshStandardMaterial({
       color: p.playerAccent,
       emissive: p.playerAccent,
-      emissiveIntensity: 0.8,
+      // Past 1.0 on purpose: the accent strips are the ship's running lights, and they have to
+      // clear the bloom threshold to read as lit rather than merely light-coloured.
+      emissiveIntensity: 1.6,
       metalness: 0.4,
-      roughness: 0.4,
+      roughness: 0.35,
     });
     this.canopyMaterial = new THREE.MeshStandardMaterial({
       color: p.playerAccent,
@@ -640,12 +705,22 @@ class ShipVisualImpl implements ShipVisual {
       transparent: true,
       opacity: 0.55,
     });
-    this.nozzleGlowMaterial = new THREE.MeshBasicMaterial({
-      color: p.playerEngine,
+    this.nozzleGlowMaterial = new THREE.ShaderMaterial({
+      vertexShader: PLUME_VERTEX,
+      fragmentShader: PLUME_FRAGMENT,
+      uniforms: {
+        uColor: { value: new THREE.Color(p.playerEngine) },
+        // White-hot at the throat regardless of livery: a flame's core is temperature, not
+        // team colour, and keeping it white is what sells the heat.
+        uCore: { value: new THREE.Color(0xffffff) },
+        uThrottle: { value: 0 },
+        uTime: { value: 0 },
+        uDepth: { value: 1 },
+      },
       transparent: true,
-      opacity: 0.4,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      side: THREE.DoubleSide,
       toneMapped: false,
     });
 
@@ -711,7 +786,10 @@ class ShipVisualImpl implements ShipVisual {
     assembly.add(canopyMesh);
 
     /* Nozzle glow (animated, separate meshes so setThrottle can scale each independently) ------ */
-    this.nozzleGlowGeometry = buildNozzleGlow(nacelleRadius * 0.9, nacelleRadius * 1.4);
+    // A long plume: this is the ship's main light source and its clearest read of speed.
+    const plumeDepth = nacelleRadius * 7.5;
+    this.nozzleGlowGeometry = buildNozzleGlow(nacelleRadius * 0.92, plumeDepth);
+    this.nozzleGlowMaterial.uniforms.uDepth!.value = plumeDepth;
     this.nozzleGlowMeshes = enginePoints.map((pt) => {
       const mesh = new THREE.Mesh(this.nozzleGlowGeometry, this.nozzleGlowMaterial);
       mesh.position.copy(pt);
@@ -787,15 +865,20 @@ class ShipVisualImpl implements ShipVisual {
     this.accentMaterial.color.set(accentHex);
     this.accentMaterial.emissive.set(accentHex);
     this.canopyMaterial.color.set(accentHex);
+    (this.nozzleGlowMaterial.uniforms.uColor!.value as THREE.Color).set(accentHex);
   }
 
   update(rawDt: number): void {
     this.time += rawDt;
 
     this.throttleVisual = damp(this.throttleVisual, this.throttleTarget, THROTTLE_SMOOTHING, rawDt);
-    const glowScale = lerp(0.55, 1.35, this.throttleVisual);
-    this.nozzleGlowMaterial.opacity = lerp(0.35, 1.0, this.throttleVisual);
-    for (const mesh of this.nozzleGlowMeshes) mesh.scale.set(glowScale, glowScale, lerp(0.8, 1.6, this.throttleVisual));
+    // The plume's length lives in the shader (see uThrottle); the mesh only widens, so the
+    // cone never has to be rescaled along an axis the gradient is measured in.
+    const glowScale = lerp(0.62, 1.15, this.throttleVisual);
+    const u = this.nozzleGlowMaterial.uniforms;
+    u.uThrottle!.value = this.throttleVisual;
+    u.uTime!.value = this.time;
+    for (const mesh of this.nozzleGlowMeshes) mesh.scale.set(glowScale, glowScale, 1);
 
     const pulseValue = 0.55 + 0.45 * pulse(this.time, 0.35);
     this.accentMaterial.emissiveIntensity = pulseValue;

@@ -66,6 +66,19 @@ const SECONDARY_PIP_MAX = 6;
 const BOSS_SEGMENT_MAX = 8;
 const LEAD_PIP_TIME = 0.28;
 
+/** Nose-crosshair geometry: pixels from centre to the start of a tick, and the tick's length. */
+const CROSSHAIR_GAP = 9;
+const CROSSHAIR_TICK = 7;
+/** Unit directions for the four crosshair ticks. */
+const CROSSHAIR_AXES: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+/** Corner-bracket strokes for the lock reticle: origin quadrant then stroke direction. */
+const LOCK_CORNERS: readonly (readonly [number, number, number, number])[] = [
+  [-1, -1, 1, 0], [-1, -1, 0, 1],
+  [1, -1, -1, 0], [1, -1, 0, 1],
+  [-1, 1, 1, 0], [-1, 1, 0, -1],
+  [1, 1, -1, 0], [1, 1, 0, -1],
+];
+
 interface ArrowSlot {
   readonly root: HTMLDivElement;
   visible: boolean;
@@ -405,6 +418,8 @@ export class Hud {
     camera: THREE.Camera,
     targets: TargetView,
     lockedId: number,
+    hardLock: boolean,
+    lockTracking: number,
   ): void {
     const now = performance.now();
 
@@ -438,7 +453,7 @@ export class Hud {
 
     for (let i = arrowsUsed; i < ARROW_POOL_SIZE; i++) this.hideArrow(i);
 
-    this.drawOverlay(lockedFound, camera, now);
+    this.drawOverlay(lockedFound, hardLock, lockTracking, camera, now);
   }
 
   private drawRadarBackground(): void {
@@ -628,12 +643,50 @@ export class Hud {
     arrow.root.classList.remove('is-visible');
   }
 
-  /** Lock-on reticle with a lead-indicator pip, drawn on the full-screen overlay canvas. */
-  private drawOverlay(lockedFound: boolean, camera: THREE.Camera, now: number): void {
+  /**
+   * The full-screen overlay: nose crosshair, lock reticle, lead pip.
+   *
+   * On a keyboard there is no cursor to tell the player where the guns point, so the nose
+   * crosshair is not decoration — it is the primary aiming reference, and it is always drawn.
+   * The lock reticle then sits over the target and a tether line runs between the two, which
+   * is what makes the tracking assist legible: the player can see the nose being walked onto
+   * the lead point instead of the ship just mysteriously turning.
+   */
+  private drawOverlay(
+    lockedFound: boolean,
+    hardLock: boolean,
+    lockTracking: number,
+    camera: THREE.Camera,
+    now: number,
+  ): void {
     const ctx = this.overlayCtx;
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
     ctx.clearRect(0, 0, w, h);
+
+    const p = palette();
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+
+    // --- Nose crosshair ---------------------------------------------------------------------
+    // Four ticks around a gap, plus a centre dot. The gap keeps the exact aim point unobscured;
+    // the dot gives it a precise centre to read against a target.
+    ctx.strokeStyle = cssColor(p.hudPrimary);
+    ctx.globalAlpha = 0.75;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (const [dx, dy] of CROSSHAIR_AXES) {
+      ctx.moveTo(cx + dx * CROSSHAIR_GAP, cy + dy * CROSSHAIR_GAP);
+      ctx.lineTo(cx + dx * (CROSSHAIR_GAP + CROSSHAIR_TICK), cy + dy * (CROSSHAIR_GAP + CROSSHAIR_TICK));
+    }
+    ctx.stroke();
+    ctx.fillStyle = cssColor(p.hudPrimary);
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
     if (!lockedFound) {
       this.prevLockId = -1;
       return;
@@ -650,32 +703,38 @@ export class Hud {
     const sx = (this.scratchNdc.x * 0.5 + 0.5) * w;
     const sy = (1 - (this.scratchNdc.y * 0.5 + 0.5)) * h;
 
-    const p = palette();
-    ctx.strokeStyle = cssColor(p.hudPrimary);
-    ctx.lineWidth = 1.6;
+    // --- Lock reticle -----------------------------------------------------------------------
+    // Hard lock is a different colour and a tighter bracket that pulses, so "the assist is
+    // driving" is readable in peripheral vision without looking away from the target.
+    const lockColor = hardLock ? p.hudGood : p.hudPrimary;
+    const pulse = hardLock ? 1 + Math.sin(now * 0.008) * 0.06 : 1;
+    const size = (hardLock ? 17 : 22) * pulse;
+    const gap = 8;
+
+    ctx.strokeStyle = cssColor(lockColor);
+    ctx.lineWidth = hardLock ? 2.2 : 1.6;
 
     // Bracket reticle: four corner ticks rather than a full circle, so it reads distinctly from
     // the radar's ring markers even at a glance.
-    const size = 22;
-    const gap = 8;
-    const corners: [number, number, number, number][] = [
-      [-1, -1, 1, 0],
-      [-1, -1, 0, 1],
-      [1, -1, -1, 0],
-      [1, -1, 0, 1],
-      [-1, 1, 1, 0],
-      [-1, 1, 0, -1],
-      [1, 1, -1, 0],
-      [1, 1, 0, -1],
-    ];
     ctx.beginPath();
-    for (const [ox, oy, dx, dy] of corners) {
+    for (const [ox, oy, dx, dy] of LOCK_CORNERS) {
       const cx0 = sx + ox * size;
       const cy0 = sy + oy * size;
       ctx.moveTo(cx0, cy0);
       ctx.lineTo(cx0 + dx * gap, cy0 + dy * gap);
     }
     ctx.stroke();
+
+    // Tracking-saturation arc: how much of the assist's turn-rate budget is being spent. A full
+    // ring means the target is out-turning the assist and the player needs to help.
+    if (lockTracking > 0.02) {
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size + 7, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * lockTracking);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
 
     // Lead pip: extrapolated from the target's own on-screen motion since last frame. No
     // velocity is handed to the HUD, so this is a screen-space estimate rather than a physical
@@ -690,6 +749,16 @@ export class Hud {
     const vy = (sy - this.prevLockScreenY) / dt;
     const pipX = sx + vx * LEAD_PIP_TIME;
     const pipY = sy + vy * LEAD_PIP_TIME;
+
+    // Tether from the nose to the lock, so the correction the assist is applying is visible.
+    ctx.strokeStyle = cssColor(lockColor);
+    ctx.globalAlpha = 0.22;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(sx, sy);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
 
     ctx.fillStyle = cssColor(p.hudWarning);
     ctx.beginPath();

@@ -41,7 +41,7 @@ import { clamp, clamp01, scratchVec3A, scratchVec3B, FORWARD } from './core/math
 
 import { RenderSystem } from './render/renderer';
 import { ChaseCamera } from './render/camera';
-import { Starfield } from './render/starfield';
+import { Starfield, SUN_COLOR, SUN_DIRECTION } from './render/starfield';
 import { Arena } from './render/arena';
 import { applyEnvironment, disposeEnvironment } from './render/environment';
 import { palette, setColorblindMode } from './render/palette';
@@ -65,6 +65,7 @@ import { TargetingSystem } from './combat/targeting';
 import { EnemyManager } from './enemies/manager';
 import { BossEncounter } from './enemies/bosses';
 import type { BossContext } from './enemies/bosses';
+import type { PlayerState } from './core/types';
 import { WaveDirector } from './enemies/director';
 
 import { rollDraft, draftOdds, takeAugment, getAugment } from './progression/augments';
@@ -94,7 +95,11 @@ import { Codex } from './ui/codex';
 import './ui/styles.css';
 
 /** Scratch reused every frame so the loop stays allocation-free. */
+/** Nudges the rim light off the exact anti-sun axis so it grazes rather than back-lights. */
+const RIM_OFFSET = /*#__PURE__*/ new THREE.Vector3(-40, -55, 0);
 const aimDir = /*#__PURE__*/ new THREE.Vector3();
+const trackDir = /*#__PURE__*/ new THREE.Vector3();
+const trackPoint = /*#__PURE__*/ new THREE.Vector3();
 const tmpScreen = /*#__PURE__*/ new THREE.Vector3();
 
 export class Game {
@@ -165,6 +170,8 @@ export class Game {
   private disposed = false;
   private speedFraction = 0;
   private boundaryWarning = 0;
+  /** 0..1 saturation of the lock-tracking assist, surfaced on the HUD lock readout. */
+  private lockTracking = 0;
   /** Decays to 0 in updatePresentation; the renderer holds no decay of its own. */
   private damagePulse = 0;
 
@@ -293,17 +300,33 @@ export class Game {
 
   /* Setup ------------------------------------------------------------------------------- */
 
+  /**
+   * Three-point lighting, deliberately motivated by what is actually in the sky.
+   *
+   * The key sits exactly on `SUN_DIRECTION`, the same vector the nebula shader draws the sun
+   * along, so a hull's brightest edge always faces the visible light source. Getting that
+   * agreement is most of what separates "3D models in front of a space picture" from a scene.
+   *
+   * The rim is the opposite hemisphere in the player's accent cyan, standing in for nebula
+   * bounce, and it is what keeps a dark ship legible against dark space — a silhouette needs a
+   * bright edge, not more ambient. Ambient itself stays low so metal keeps its contrast.
+   */
   private addLights(): void {
     const p = palette();
-    const key = new THREE.DirectionalLight(0xffffff, 2.0);
-    key.position.set(60, 90, 40);
+    const key = new THREE.DirectionalLight(SUN_COLOR, 3.1);
+    key.position.copy(SUN_DIRECTION).multiplyScalar(100);
     this.render.scene.add(key);
 
-    const rim = new THREE.DirectionalLight(p.playerAccent, 0.7);
-    rim.position.set(-70, -20, -50);
+    const rim = new THREE.DirectionalLight(p.playerAccent, 1.35);
+    rim.position.copy(SUN_DIRECTION).multiplyScalar(-100).add(RIM_OFFSET);
     this.render.scene.add(rim);
 
-    this.render.scene.add(new THREE.AmbientLight(0x2a3448, 0.5));
+    // A dim warm kick from below, so undersides never read as flat black holes.
+    const bounce = new THREE.DirectionalLight(0xff9b6a, 0.35);
+    bounce.position.set(20, -90, -30);
+    this.render.scene.add(bounce);
+
+    this.render.scene.add(new THREE.AmbientLight(0x2a3448, 0.45));
   }
 
   private acquirePlayerVisuals(): void {
@@ -494,7 +517,6 @@ export class Game {
     music.setSector(0);
 
     this.beginEncounter();
-    this.input.requestPointerLock();
   }
 
   private rebuildShipIfNeeded(): void {
@@ -559,6 +581,26 @@ export class Game {
     this.render.render(rawDt);
   };
 
+  /**
+   * Unit direction from the ship to where the locked target *will be* when a shot arrives, or
+   * null if nothing is locked. This — not the target's current position — is what the tracking
+   * assist chases, so holding lock on a crossing target actually lands hits rather than
+   * trailing behind it.
+   */
+  private resolveTrackDirection(player: PlayerState): THREE.Vector3 | null {
+    if (this.targeting.lockedId < 0) return null;
+    const speed = getWeapon(player.primary).projectileSpeed;
+    // Beams and other hitscan weapons report zero speed; aim them straight at the target.
+    const leadSpeed = speed > 0 ? speed : 1e6;
+    if (!this.targeting.getLeadPoint(trackPoint, leadSpeed, this.enemies)) return null;
+
+    trackDir.copy(trackPoint).sub(player.position);
+    const dist = trackDir.length();
+    if (dist < 1e-3) return null;
+    trackDir.multiplyScalar(1 / dist);
+    return trackDir;
+  }
+
   private simulate(dt: number): void {
     const player = this.playerSystem.state;
 
@@ -568,20 +610,36 @@ export class Game {
     if (player.alive) {
       this.playerSystem.update(dt);
 
-      const result = this.flight.update(player, this.input, dt, this.arena.radius, this.playerSystem.speedBuffMult);
+      // Targeting resolves *before* flight: the tracking assist steers toward the intercept
+      // point, so it has to be this step's point, not last step's.
+      this.targeting.update(player, this.enemies, this.enemies.liveCount, this.render.camera, this.settings, dt);
+      if (this.input.wasPressed('cycleTarget')) {
+        this.targeting.cycle(player, this.enemies, this.enemies.liveCount, this.render.camera);
+      }
+      player.lockedTargetId = this.targeting.lockedId;
+
+      // Hard lock is a hold, not a toggle: the assist is strongest exactly while the player is
+      // asking for it, and holding a key is a clearer contract than remembering a mode.
+      const hardLock = this.input.isDown('lockTarget');
+      const trackDir = this.resolveTrackDirection(player);
+      player.hardLock = hardLock && trackDir !== null;
+
+      const result = this.flight.update(
+        player,
+        this.input,
+        dt,
+        this.arena.radius,
+        this.playerSystem.speedBuffMult,
+        trackDir,
+        hardLock ? 1 : PLAYER.softLockStrength,
+      );
       this.speedFraction = result.speedFraction;
       this.boundaryWarning = result.atBoundary;
+      this.lockTracking = result.lockTracking;
 
       // Guns fire along the nose, then aim assist bends the shot slightly toward a target.
       aimDir.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
       this.targeting.applyAimAssist(aimDir, player.position, this.enemies, this.enemies.liveCount, this.settings);
-
-      this.targeting.update(player, this.enemies, this.enemies.liveCount, this.render.camera, this.settings, dt);
-      player.lockedTargetId = this.targeting.lockedId;
-
-      if (this.input.wasPressed('cycleTarget')) {
-        this.targeting.cycle(player, this.enemies, this.enemies.liveCount, this.render.camera);
-      }
 
       this.combatCtx.playerAlive = true;
       this.weapons.update(
@@ -592,6 +650,12 @@ export class Game {
         this.targeting,
         dt,
       );
+
+      // Wraith's weapon swap. Read here rather than off a raw keydown so it honours the
+      // player's binding (and its alternate) like every other action.
+      if (this.input.wasPressed('swapWeapon') && this.playerSystem.swapPrimary()) {
+        playSfx('uiClick', 0.6);
+      }
 
       if (this.weapons.consumeOverchargeDetonation()) this.overchargeDetonate();
       if (this.playerSystem.isBatteryFull) {
@@ -757,7 +821,6 @@ export class Game {
 
     this.draft.hide();
     this.setState(GameState.Playing);
-    this.input.requestPointerLock();
     this.beginEncounter();
   }
 
@@ -903,7 +966,6 @@ export class Game {
     this.menus.hideAll();
     this.setState(GameState.Playing);
     this.clock.skipMissedTime(performance.now());
-    this.input.requestPointerLock();
     audio.resume();
   }
 
@@ -980,7 +1042,15 @@ export class Game {
         this.bosses.phaseCount,
       );
       this.targetView.count = this.enemies.liveCount;
-      this.hud.updateTracking(player.position, player.quaternion, this.render.camera, this.targetView, this.targeting.lockedId);
+      this.hud.updateTracking(
+        player.position,
+        player.quaternion,
+        this.render.camera,
+        this.targetView,
+        this.targeting.lockedId,
+        player.hardLock,
+        this.lockTracking,
+      );
     }
   }
 
@@ -1050,9 +1120,10 @@ export class Game {
   };
 
   private readonly onPointerDown = (): void => {
-    // Browsers require a gesture before an AudioContext may start.
+    // Browsers require a gesture before an AudioContext may start. Note this deliberately does
+    // *not* grab pointer lock: the game is keyboard-first, and silently capturing the cursor
+    // on a stray click would hand steering to a device the player may not be using.
     audio.unlock();
-    if (this.state === GameState.Playing && !this.input.pointerLocked) this.input.requestPointerLock();
   };
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
@@ -1064,11 +1135,6 @@ export class Game {
     if (e.code === 'Escape' || e.code === 'KeyP') {
       if (this.state === GameState.Playing) this.pause();
       else if (this.state === GameState.Paused) this.resume();
-    }
-
-    if (e.code === 'KeyF' && this.state === GameState.Playing) {
-      // Wraith's weapon swap.
-      if (this.playerSystem.swapPrimary()) playSfx('uiClick', 0.6);
     }
   };
 

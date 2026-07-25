@@ -1,10 +1,16 @@
 /**
  * Unified keyboard + mouse + gamepad input.
  *
- * Devices are merged into the single `InputState` contract the rest of the game reads: digital
- * keys resolve through `settings.keybinds` so remapping is free, mouse and gamepad both drive
- * the aim reticle (whichever moved most recently wins), and gamepad sticks/buttons are OR'd
- * onto the same action set keyboard uses.
+ * **The keyboard is the primary device.** Steering lives on the arrow-key cluster and comes
+ * through the same smoothed axes a stick would produce, so the game is fully playable — and
+ * feels analog — with no pointer at all. A mouse or gamepad, if present, writes the same two
+ * steering numbers; whichever device was touched most recently owns them. Critically, when
+ * the player is on the keyboard the steering axes rest at exactly zero, so releasing the keys
+ * holds the current heading instead of drifting the nose toward a stale cursor position.
+ *
+ * Every action also carries a fixed alternate binding (`ALT_KEYBINDS`) chosen so both hands
+ * have a comfortable reach: the WASD cluster and the arrow cluster each expose fire, boost,
+ * drift, and lock without crossing hands.
  *
  * Every listener is a bound arrow-function class field created once in the constructor, and
  * every per-frame method (`update`, `endStep`) only mutates pre-allocated fields — no `new`,
@@ -12,12 +18,17 @@
  */
 
 import type { InputAction, InputState, Settings } from './types';
+import { ALT_KEYBINDS } from './settings';
 import { clamp, clamp01, damp, springDamp } from './math';
 
-/** All 13 actions the game understands; also the set of keys a keybind record must cover. */
+/** Every action the game understands; also the set of keys a keybind record must cover. */
 const ACTIONS: readonly InputAction[] = [
   'firePrimary',
   'fireSecondary',
+  'pitchUp',
+  'pitchDown',
+  'yawLeft',
+  'yawRight',
   'throttleUp',
   'throttleDown',
   'strafeLeft',
@@ -27,19 +38,35 @@ const ACTIONS: readonly InputAction[] = [
   'boost',
   'drift',
   'cycleTarget',
+  'lockTarget',
+  'swapWeapon',
   'reroll',
   'pause',
 ];
 
 /** Codes the browser would otherwise use to scroll the page or move focus during play. */
-const PREVENT_DEFAULT_CODES = new Set<string>(['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const PREVENT_DEFAULT_CODES = new Set<string>([
+  'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Slash',
+]);
 
 /** Digital WASD/QE axes approach their target over roughly this many seconds. */
 const AXIS_SMOOTH_TIME = 0.12;
+/**
+ * Steering keys ramp in faster than the throttle axes — a slow ramp on the nose reads as lag,
+ * not weight — but still fast enough that a tap is a nudge rather than a jerk.
+ */
+const AIM_SMOOTH_TIME = 0.075;
 /** Fraction of the pointer-lock reticle's offset from centre retained after one second. */
 const RETICLE_DRIFT_RETAIN = 0.88;
 /** Pixel-to-NDC scale at `mouseSensitivity` == 1, before the user's multiplier is applied. */
 const MOUSE_PIXEL_SCALE = 0.0022;
+
+/** Which device last produced input. Steering reads from whichever this names. */
+const enum Device {
+  Keyboard,
+  Mouse,
+  Gamepad,
+}
 
 const GAMEPAD_DEADZONE = 0.18;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.25;
@@ -70,9 +97,15 @@ export class InputManager implements InputState {
   /** Left-stick derived aim, recomputed each gamepad poll. */
   private gamepadAimX = 0;
   private gamepadAimY = 0;
+  /** Arrow-cluster steering, spring-smoothed so held keys read as a stick deflection. */
+  private keyAimX = 0;
+  private keyAimY = 0;
+  private readonly keyAimXVel = { value: 0 };
+  private readonly keyAimYVel = { value: 0 };
 
   private _aimX = 0;
   private _aimY = 0;
+  private _steering = false;
 
   // --- Analog axes -----------------------------------------------------------------------------
   private throttleSmoothed = 0;
@@ -101,7 +134,7 @@ export class InputManager implements InputState {
   private mouseLeftDown = false;
   private mouseRightDown = false;
 
-  private lastDeviceWasGamepad = false;
+  private device: Device = Device.Keyboard;
   private rebindTarget: InputAction | null = null;
 
   constructor(canvas: HTMLElement, settings: Settings) {
@@ -125,6 +158,10 @@ export class InputManager implements InputState {
     return this._aimY;
   }
 
+  get steering(): boolean {
+    return this._steering;
+  }
+
   get throttle(): number {
     return this._throttle;
   }
@@ -142,7 +179,12 @@ export class InputManager implements InputState {
   }
 
   get usingGamepad(): boolean {
-    return this.lastDeviceWasGamepad;
+    return this.device === Device.Gamepad;
+  }
+
+  /** True while steering comes from the keyboard — the HUD hides the mouse reticle then. */
+  get usingKeyboardAim(): boolean {
+    return this.device === Device.Keyboard;
   }
 
   get rebinding(): InputAction | null {
@@ -166,10 +208,6 @@ export class InputManager implements InputState {
     this.settings = s;
   }
 
-  requestPointerLock(): void {
-    this.canvas.requestPointerLock();
-  }
-
   exitPointerLock(): void {
     if (this.pointerLocked) document.exitPointerLock();
   }
@@ -187,6 +225,14 @@ export class InputManager implements InputState {
       this.mouseAimY = damp(this.mouseAimY, 0, RETICLE_DRIFT_RETAIN, rawDt);
     }
 
+    // Steering keys. The spring is what turns two digital keys into an axis that eases in and
+    // — just as importantly — eases back to a true zero, so letting go holds the heading.
+    const aimXTarget = (this.isDown('yawRight') ? 1 : 0) - (this.isDown('yawLeft') ? 1 : 0);
+    const aimYTarget = (this.isDown('pitchUp') ? 1 : 0) - (this.isDown('pitchDown') ? 1 : 0);
+    const signedYTarget = this.settings.invertY ? -aimYTarget : aimYTarget;
+    this.keyAimX = springDamp(this.keyAimX, aimXTarget, this.keyAimXVel, AIM_SMOOTH_TIME, rawDt);
+    this.keyAimY = springDamp(this.keyAimY, signedYTarget, this.keyAimYVel, AIM_SMOOTH_TIME, rawDt);
+
     const throttleTarget = (this.isDown('throttleUp') ? 1 : 0) - (this.isDown('throttleDown') ? 1 : 0);
     const strafeTarget = (this.isDown('strafeRight') ? 1 : 0) - (this.isDown('strafeLeft') ? 1 : 0);
     const rollTarget = (this.isDown('rollRight') ? 1 : 0) - (this.isDown('rollLeft') ? 1 : 0);
@@ -200,13 +246,27 @@ export class InputManager implements InputState {
     this._strafe = this.gamepadStrafeActive ? this.gamepadStrafe : clamp(this.strafeSmoothed, -1, 1);
     this._roll = clamp(this.rollSmoothed, -1, 1);
 
-    if (this.lastDeviceWasGamepad) {
+    // A held steering key always reclaims ownership of the axes, even mid-mouse-move: the
+    // keyboard is the primary device and must never be talked over by a stale cursor.
+    if (aimXTarget !== 0 || aimYTarget !== 0) this.device = Device.Keyboard;
+
+    if (this.device === Device.Gamepad) {
       this._aimX = this.gamepadAimX;
       this._aimY = this.gamepadAimY;
-    } else {
+    } else if (this.device === Device.Mouse) {
       this._aimX = this.mouseAimX;
       this._aimY = this.mouseAimY;
+    } else {
+      this._aimX = clamp(this.keyAimX, -1, 1);
+      this._aimY = clamp(this.keyAimY, -1, 1);
     }
+
+    // "Steering" is about intent, not the smoothed value: the assist must yield the instant a
+    // key goes down and resume the instant it is released, not trail the spring's tail.
+    this._steering =
+      this.device === Device.Keyboard
+        ? aimXTarget !== 0 || aimYTarget !== 0
+        : Math.abs(this._aimX) > 0.08 || Math.abs(this._aimY) > 0.08;
   }
 
   /** Clears the just-pressed edges and polls the gamepad. Called once per simulation step. */
@@ -244,7 +304,7 @@ export class InputManager implements InputState {
   }
 
   private readonly onMouseMove = (e: MouseEvent): void => {
-    this.lastDeviceWasGamepad = false;
+    this.device = Device.Mouse;
 
     if (this.pointerLocked) {
       const sens = MOUSE_PIXEL_SCALE * this.settings.mouseSensitivity;
@@ -265,7 +325,6 @@ export class InputManager implements InputState {
   };
 
   private readonly onMouseDown = (e: MouseEvent): void => {
-    this.lastDeviceWasGamepad = false;
     if (e.button === 0) {
       if (!this.mouseLeftDown) this.actionPressed.firePrimary = true;
       this.mouseLeftDown = true;
@@ -287,6 +346,21 @@ export class InputManager implements InputState {
 
   // --- Keyboard ------------------------------------------------------------------------------
 
+  /**
+   * True when `code` is either the action's remappable binding or its fixed alternate. The
+   * alternate exists so the arrow-key hand and the WASD hand each reach the same verbs; it is
+   * skipped when the player has rebound some *other* action onto that key, so a deliberate
+   * remap always wins over a built-in convenience binding.
+   */
+  private matchesBinding(action: InputAction, code: string): boolean {
+    if (this.settings.keybinds[action] === code) return true;
+    if (ALT_KEYBINDS[action] !== code) return false;
+    for (const other of ACTIONS) {
+      if (other !== action && this.settings.keybinds[other] === code) return false;
+    }
+    return true;
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     if (PREVENT_DEFAULT_CODES.has(e.code)) e.preventDefault();
 
@@ -298,12 +372,12 @@ export class InputManager implements InputState {
       return;
     }
 
-    this.lastDeviceWasGamepad = false;
+    this.device = Device.Keyboard;
     if (this.keyDown.has(e.code)) return; // OS key-repeat, not a new edge.
     this.keyDown.add(e.code);
 
     for (const action of ACTIONS) {
-      if (this.settings.keybinds[action] === e.code) {
+      if (this.matchesBinding(action, e.code)) {
         if (!this.actionKeyDown[action]) this.actionPressed[action] = true;
         this.actionKeyDown[action] = true;
       }
@@ -314,7 +388,13 @@ export class InputManager implements InputState {
     if (PREVENT_DEFAULT_CODES.has(e.code)) e.preventDefault();
     this.keyDown.delete(e.code);
     for (const action of ACTIONS) {
-      if (this.settings.keybinds[action] === e.code) this.actionKeyDown[action] = false;
+      // Release only when no *other* still-held key maps to the same action, otherwise
+      // lifting the alternate binding would cancel a press made with the primary one.
+      if (!this.matchesBinding(action, e.code)) continue;
+      const primary = this.settings.keybinds[action];
+      const alt = ALT_KEYBINDS[action];
+      const stillHeld = (primary !== e.code && this.keyDown.has(primary)) || (alt !== undefined && alt !== e.code && this.keyDown.has(alt));
+      if (!stillHeld) this.actionKeyDown[action] = false;
     }
   };
 
@@ -336,7 +416,7 @@ export class InputManager implements InputState {
     if (down) {
       if (!this.actionGamepadDown[action]) this.actionPressed[action] = true;
       this.actionGamepadDown[action] = true;
-      this.lastDeviceWasGamepad = true;
+      this.device = Device.Gamepad;
     } else {
       this.actionGamepadDown[action] = false;
     }
@@ -373,7 +453,7 @@ export class InputManager implements InputState {
       // W3C axes convention: negative Y is "up". `ySign()` mirrors the mouse convention above
       // so up-on-stick and up-on-mouse both increase aimY by default, and invertY flips both.
       this.gamepadAimY = uy * curved * this.ySign();
-      this.lastDeviceWasGamepad = true;
+      this.device = Device.Gamepad;
     } else {
       this.gamepadAimX = 0;
       this.gamepadAimY = 0;
@@ -386,7 +466,7 @@ export class InputManager implements InputState {
     if (Math.abs(rawRX) > GAMEPAD_DEADZONE) {
       this.gamepadStrafe = clamp(rawRX, -1, 1);
       this.gamepadStrafeActive = true;
-      this.lastDeviceWasGamepad = true;
+      this.device = Device.Gamepad;
     } else {
       this.gamepadStrafeActive = false;
     }
@@ -394,7 +474,7 @@ export class InputManager implements InputState {
     if (Math.abs(rawRY) > GAMEPAD_DEADZONE) {
       this.gamepadThrottle = clamp(-rawRY, -1, 1);
       this.gamepadThrottleActive = true;
-      this.lastDeviceWasGamepad = true;
+      this.device = Device.Gamepad;
     } else {
       this.gamepadThrottleActive = false;
     }
