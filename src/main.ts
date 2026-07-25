@@ -13,6 +13,21 @@ if (!container) {
   throw new Error('[starfall] #app container is missing from index.html');
 }
 
+/**
+ * Small always-on build stamp in the corner. Exists so "did my fix actually deploy" has a
+ * one-glance answer instead of trusting cache state or CI logs -- Pages/CDN caching and the
+ * feature-branch-only deploy gate both make "the site looks unchanged" ambiguous otherwise.
+ */
+function showBuildStamp(): void {
+  const el = document.createElement('div');
+  el.textContent = `${__BUILD_SHA__} · ${__BUILD_TIME__.slice(0, 16).replace('T', ' ')}`;
+  el.style.cssText =
+    'position:fixed;right:6px;bottom:4px;z-index:9999;pointer-events:none;' +
+    'font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#3d5266;' +
+    'letter-spacing:.03em;user-select:text;';
+  document.body.append(el);
+}
+
 function showFatal(message: string, detail: string): void {
   const el = document.createElement('div');
   el.style.cssText =
@@ -32,6 +47,8 @@ function showFatal(message: string, detail: string): void {
   el.append(inner);
   document.body.append(el);
 }
+
+showBuildStamp();
 
 try {
   const game = new Game(container);
