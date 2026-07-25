@@ -507,30 +507,26 @@ function testFlightLoopsWithoutInverting(): void {
     loopSteps >= 0 ? `closed the loop in ${(loopSteps / 120).toFixed(2)}s` : 'never returned to the start heading',
   );
 
-  // Bank the ship hard mid-flight, then let go of everything and confirm auto-level brings it
-  // back to level — but only once, after the roll input actually stops.
+  // Bank the ship hard mid-flight, then let go of everything: the attitude must be *kept*.
+  // Space has no horizon, so nothing may roll the ship back toward world level.
   input.aimY = 0;
   input.steering = false;
   input.roll = 1;
   for (let i = 0; i < 40; i++) flight.update(player, input, STEP, 520, 1, null, 0);
   input.roll = 0;
 
-  // Auto-level converges exponentially with a ~1.2s time constant (PLAYER.autoLevelTime), so
-  // give it several time constants to actually settle rather than catching it mid-decay.
+  // Let the roll rate bleed off, then hold for several seconds — any auto-levelling would have
+  // long since pulled the bank out within this window.
+  for (let i = 0; i < 30; i++) flight.update(player, input, STEP, 520, 1, null, 0);
+  const bankedUp = new THREE.Vector3(0, 1, 0).applyQuaternion(player.quaternion);
   for (let i = 0; i < 8 * 120; i++) flight.update(player, input, STEP, 520, 1, null, 0);
 
   flightUp.set(0, 1, 0).applyQuaternion(player.quaternion);
-  flightForward.set(0, 0, -1).applyQuaternion(player.quaternion);
-  // Compare against world-up projected into the ship's own plane, not raw world-up, since a
-  // level ship pitched away from the horizon still has its up vector tilted off (0,1,0).
-  const projectedUp = new THREE.Vector3(0, 1, 0)
-    .addScaledVector(flightForward, -flightForward.dot(new THREE.Vector3(0, 1, 0)))
-    .normalize();
-  const levelError = Math.acos(Math.max(-1, Math.min(1, flightUp.dot(projectedUp))));
+  const drift = Math.acos(Math.max(-1, Math.min(1, flightUp.dot(bankedUp))));
   check(
-    'auto-level settles bank back to level once roll is released',
-    levelError < 0.05,
-    `${((levelError * 180) / Math.PI).toFixed(2)}° of residual bank after settling`,
+    'the ship holds its bank after roll is released — nothing re-levels it',
+    drift < 0.02,
+    `${((drift * 180) / Math.PI).toFixed(2)}° of attitude drift over 8s`,
   );
 }
 
