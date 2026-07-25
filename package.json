@@ -1,0 +1,22 @@
+{
+  "name": "starfall-armada-x",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Starfall Armada X — a 3D space-fighter roguelite built with Three.js.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/three": "0.185.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  }
+}
