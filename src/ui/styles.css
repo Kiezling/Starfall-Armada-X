@@ -439,17 +439,31 @@ button {
 .hud-arrow.is-visible {
   display: block;
 }
-.hud-arrow::before {
+/* A hollow chevron rather than a filled triangle. Filled magenta wedges read as UI stickers
+   pasted on the frame; a thin chevron with a glow reads as a threat marker and stops competing
+   with the ships for attention. Built from two rotated bars so it stays pure CSS. */
+.hud-arrow::before,
+.hud-arrow::after {
   content: '';
   position: absolute;
-  left: -8px;
-  top: -8px;
-  width: 0;
-  height: 0;
-  border-left: 8px solid transparent;
-  border-right: 8px solid transparent;
-  border-bottom: 14px solid var(--enemy-accent);
-  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+  width: 11px;
+  height: 2px;
+  background: var(--enemy-accent);
+  border-radius: 1px;
+  box-shadow: 0 0 6px var(--enemy-accent);
+  opacity: 0.85;
+}
+.hud-arrow::before {
+  left: -9px;
+  top: -1px;
+  transform-origin: right center;
+  transform: rotate(-42deg);
+}
+.hud-arrow::after {
+  left: -2px;
+  top: -1px;
+  transform-origin: left center;
+  transform: rotate(42deg);
 }
 
 /* --- Banner (sector/wave callouts) ------------------------------------------------------- */
@@ -1494,5 +1508,60 @@ button {
   .codex-root * {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* Controls card ----------------------------------------------------------------------------
+ * Shown on the title screen. The game is keyboard-only, so this is not a nicety — it is how a
+ * new pilot learns that the arrow cluster flies the nose and that lock is what lands shots.
+ */
+.menu-controls {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-thin);
+}
+.menu-controls-title {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-primary);
+  text-align: center;
+  margin-bottom: 12px;
+}
+.menu-controls-grid {
+  display: grid;
+  /* The key column sizes to its widest chord and stops there, so the labels all share a
+     single left edge and the card reads as two columns rather than a ragged list. */
+  grid-template-columns: max-content max-content;
+  /* Sized to content and centred, so the two columns sit as a block under the heading rather
+     than hugging the panel's left edge. */
+  width: max-content;
+  margin: 0 auto;
+  gap: 5px 16px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.menu-controls-key {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  white-space: nowrap;
+  letter-spacing: 0.05em;
+}
+.menu-controls-label {
+  color: var(--text-dim);
+}
+
+/* On a short viewport the eleven rows push past the panel's max-height. The panel scrolls, but
+   arrow keys are already claimed by menu focus navigation and there is no pointer to scroll
+   with — so on a keyboard-only game the card has to *fit*, not scroll. Two key/label pairs per
+   row halves its height and keeps every binding on screen. */
+@media (max-height: 860px) {
+  .menu-controls-grid {
+    grid-template-columns: max-content max-content max-content max-content;
+    gap: 4px 14px;
+  }
+  .menu-controls {
+    margin-top: 18px;
+    padding-top: 14px;
   }
 }

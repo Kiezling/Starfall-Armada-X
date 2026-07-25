@@ -25,15 +25,24 @@ const FADE_DURATION = 1.5;
 const NEBULA_RADIUS = 4000;
 
 /**
+ * Direction to the distant sun, shared with the scene's key light so the highlight on a hull
+ * and the glare in the sky agree. High and off to one side: a light that comes from behind the
+ * camera flattens everything, and one on the horizon puts glare where the fight is.
+ */
+export const SUN_DIRECTION = /*#__PURE__*/ new THREE.Vector3(-0.42, 0.66, 0.62).normalize();
+/** Slightly warm white — the only warm light source in an otherwise cold palette. */
+export const SUN_COLOR = 0xffe6c4;
+
+/**
  * Three parallax layers, far to near. `parallax` is how much of the camera's motion the
  * layer tracks: near 1 means the layer follows the camera almost exactly (so it barely
  * shifts on screen — reads as infinitely far away); lower values let the layer lag behind,
  * which is what produces the illusion that it is closer to the player.
  */
 const STAR_LAYERS = [
-  { count: 2600, radius: 3200, parallax: 0.995, size: [0.6, 1.6] as const, brightness: [0.2, 0.5] as const },
-  { count: 1500, radius: 2200, parallax: 0.9, size: [1.2, 2.4] as const, brightness: [0.35, 0.7] as const },
-  { count: 700, radius: 1300, parallax: 0.72, size: [2.0, 3.6] as const, brightness: [0.55, 1.0] as const },
+  { count: 5200, radius: 3200, parallax: 0.995, size: [0.7, 1.7] as const, brightness: [0.28, 0.6] as const },
+  { count: 2400, radius: 2200, parallax: 0.9, size: [1.3, 2.6] as const, brightness: [0.45, 0.85] as const },
+  { count: 900, radius: 1300, parallax: 0.72, size: [2.2, 4.2] as const, brightness: [0.7, 1.0] as const },
 ] as const;
 
 const TOTAL_STARS = STAR_LAYERS.reduce((sum, l) => sum + l.count, 0);
@@ -81,6 +90,13 @@ const NOISE_GLSL = /* glsl */ `
     }
     return sum;
   }
+
+  // Two-octave fbm for the domain-warp offset. The warp only needs to be smooth and
+  // low-frequency — its detail is invisible once it has been fed through the field it warps —
+  // so paying for four octaves there is pure waste on a full-screen pass.
+  float fbm2(vec3 p) {
+    return 0.5 * valueNoise3(p) + 0.25 * valueNoise3(p * 2.03);
+  }
 `;
 
 const NEBULA_VERTEX = /* glsl */ `
@@ -101,24 +117,77 @@ const NEBULA_FRAGMENT = /* glsl */ `
   uniform vec3 uColorB1;
   uniform float uFade;
   uniform float uDim;
+  uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
 
   ${NOISE_GLSL}
 
+  /**
+   * Ridged fbm. Folding each octave around zero (1 - |n|) turns rounded blobs into creases,
+   * and squaring sharpens them — that is what produces filaments instead of the cotton-wool
+   * look plain fbm gives. This is the single change that makes the backdrop read as a nebula.
+   */
+  float ridged(vec3 p) {
+    float sum = 0.0;
+    float amp = 0.5;
+    float freq = 1.0;
+    for (int i = 0; i < 4; i++) {
+      float n = valueNoise3(p * freq) * 2.0 - 1.0;
+      n = 1.0 - abs(n);
+      sum += amp * n * n;
+      freq *= 2.17;
+      amp *= 0.5;
+    }
+    return sum;
+  }
+
   void main() {
-    // Low frequency, slow drift — this is dressing, never a feature (DESIGN §3).
-    vec3 p = vDir * 1.4 + vec3(uTime * 0.006, uTime * 0.004, -uTime * 0.005);
-    float n = fbm(p);
-    float n2 = fbm(p * 2.3 + 11.0);
-    // GLSL has no clamp01 — that is a TypeScript helper. Use the built-in three-arg clamp.
-    float mixT = clamp(n * 0.7 + n2 * 0.3, 0.0, 1.0);
+    vec3 dir = normalize(vDir);
+    // Slow drift only — this is dressing, never a feature (DESIGN §3).
+    float t = uTime * 0.004;
+
+    // Domain warp: offset the sample point by another noise field before evaluating. One
+    // extra fbm buys the swirling, sheared structure that no amount of octaves alone gives.
+    vec3 q = dir * 1.6 + vec3(t, t * 0.7, -t * 0.8);
+    vec3 warp = vec3(fbm2(q + 3.1), fbm2(q + 8.7), fbm2(q + 15.3)) - 0.375;
+    vec3 p = q + warp * 1.35;
+
+    float clouds = ridged(p);
+    float detail = fbm(p * 3.4 + 21.0);
+    float density = clamp(clouds * 0.78 + detail * 0.3 - 0.12, 0.0, 1.0);
+
+    // A galactic band: a soft equatorial concentration, tilted off the arena's axes so it
+    // never lines up with the boundary shell and reads as a separate, far-away structure.
+    vec3 bandAxis = normalize(vec3(0.36, 0.87, -0.34));
+    float band = 1.0 - abs(dot(dir, bandAxis));
+    band = pow(clamp(band, 0.0, 1.0), 7.0);
+    density = clamp(density * (0.55 + band * 1.15), 0.0, 1.0);
 
     vec3 colorA = mix(uColorA0, uColorA1, uFade);
     vec3 colorB = mix(uColorB0, uColorB1, uFade);
-    vec3 col = mix(colorA, colorB, mixT);
 
-    // Compressed brightness keeps contrast low so the nebula reads as atmosphere, not signal.
-    float brightness = (0.28 + 0.22 * mixT) * uDim;
-    gl_FragColor = vec4(col * brightness, 1.0);
+    // Three-stop ramp rather than a two-colour lerp: deep void, mid cloud, then a hot core
+    // that only the densest filaments reach. The cores are the part bloom catches, and they
+    // are what gives the sky somewhere for the eye to land.
+    vec3 col = mix(colorA * 0.35, colorA, smoothstep(0.0, 0.45, density));
+    col = mix(col, colorB * 1.25, smoothstep(0.35, 0.8, density));
+    col = mix(col, colorB * 2.6 + colorA * 0.4, smoothstep(0.74, 1.0, density) * 0.75);
+
+    float brightness = (0.2 + 1.05 * density * density) * uDim;
+    col *= brightness;
+
+    // Distant sun: a small hard disc inside a wide halo. Its glow also tints the nearby
+    // clouds, which is what ties the backdrop together instead of leaving a sticker on it.
+    float sunDot = max(dot(dir, uSunDir), 0.0);
+    float halo = pow(sunDot, 220.0);
+    float bloomHalo = pow(sunDot, 12.0) * 0.16 + pow(sunDot, 60.0) * 0.3;
+    float disc = smoothstep(0.99955, 0.99985, sunDot);
+    col += uSunColor * (halo * 1.4 + bloomHalo) * uDim;
+    col += uSunColor * disc * 5.0 * uDim;
+    // Backlit clouds near the sun: density scatters its light rather than blocking it.
+    col += uSunColor * density * pow(sunDot, 4.0) * 0.5 * uDim;
+
+    gl_FragColor = vec4(col, 1.0);
   }
 `;
 
@@ -136,6 +205,7 @@ const STAR_VERTEX = /* glsl */ `
 
   varying float vAlpha;
   varying vec3 vColor;
+  varying float vFlare;
 
   // Rough black-body ramp: cool red -> orange -> white -> blue-white.
   vec3 tempColor(float t) {
@@ -161,6 +231,9 @@ const STAR_VERTEX = /* glsl */ `
     float twinkle = 0.6 + 0.4 * sin(uTime * (1.2 + aPhase * 1.7) + aPhase * 6.2831853);
     vAlpha = aBrightness * twinkle * uDim;
     vColor = tempColor(aTemp) * uStarTint;
+    // Only the top of the brightness range earns spikes, so the sky keeps a clear hierarchy
+    // instead of turning into a field of identical asterisks.
+    vFlare = smoothstep(0.72, 1.0, aBrightness);
 
     gl_PointSize = aSize * (320.0 / max(-mv.z, 1.0));
     gl_Position = projectionMatrix * mv;
@@ -170,12 +243,23 @@ const STAR_VERTEX = /* glsl */ `
 const STAR_FRAGMENT = /* glsl */ `
   varying float vAlpha;
   varying vec3 vColor;
+  varying float vFlare;
   void main() {
     vec2 uv = gl_PointCoord - 0.5;
     float d = length(uv);
     if (d > 0.5) discard;
-    float edge = smoothstep(0.5, 0.1, d);
-    gl_FragColor = vec4(vColor, edge * vAlpha);
+
+    // Core: a tight, bright point rather than a flat disc, so stars stay pin-sharp.
+    float core = smoothstep(0.5, 0.06, d);
+
+    // Diffraction spikes, only on the near/bright layer. A horizontal and a vertical lobe,
+    // each falling off with distance from its axis — the cue that reads as "this one is
+    // bright" without needing a bigger, mushier sprite.
+    float spike = (1.0 - smoothstep(0.0, 0.035, abs(uv.y))) + (1.0 - smoothstep(0.0, 0.035, abs(uv.x)));
+    spike *= (1.0 - smoothstep(0.05, 0.5, d)) * vFlare;
+
+    float intensity = core + spike * 0.85;
+    gl_FragColor = vec4(vColor, clamp(intensity, 0.0, 1.0) * vAlpha);
   }
 `;
 
@@ -240,6 +324,8 @@ export class Starfield {
         uColorB1: { value: baseB.clone() },
         uFade: { value: 1 },
         uDim: { value: 1 },
+        uSunDir: { value: SUN_DIRECTION.clone() },
+        uSunColor: { value: new THREE.Color(SUN_COLOR) },
       },
     });
     this.nebulaMesh = new THREE.Mesh(nebulaGeometry, this.nebulaMaterial);

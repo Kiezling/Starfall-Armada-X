@@ -49,21 +49,38 @@ no new commit is needed.
 
 ## Controls
 
+**Keyboard only. No mouse is used or required.** The left hand flies the ship's body on WASD;
+the right hand flies its nose on the arrow cluster. If you would rather keep both hands on the
+home row, `I J K L` steers exactly like the arrows.
+
 | Input | Action |
 |---|---|
-| Mouse | Steer (the ship flies toward your reticle) |
-| Left mouse / `Space` | Fire primary — heat-limited, never runs out of ammo |
-| Right mouse / `Shift` | Fire secondary — cooldown and charges |
+| `↑` `↓` `←` `→` *(or `I J K L`)* | Steer the nose |
 | `W` / `S` | Throttle up / down |
 | `A` / `D` | Lateral strafe |
-| `Q` / `E` | Manual roll |
-| `F` | Boost |
-| `Left Ctrl` | **Drift** |
-| `Tab` | Cycle target |
+| `Q` / `E` *(or `U` / `O`)* | Manual roll |
+| `Space` *(or `/`)* | Fire primary — heat-limited, never runs out of ammo |
+| `C` *(or `.`)* | Fire secondary — cooldown and charges |
+| `T` *(or `,`)* | **Hold lock** — the nose tracks your target |
+| `Tab` *(or `M`)* | Switch target |
+| `Left Shift` *(or `Right Shift`)* | Boost |
+| `X` *(or `Right Ctrl`)* | **Drift** |
+| `F` | Swap weapon (Wraith) |
 | `R` | Reroll a draft |
 | `Esc` / `P` | Pause |
 
-Full gamepad support. Every binding is remappable in Settings.
+Menus use the same keys throughout: arrows or WASD move focus, `Enter`/`Space` activates,
+`Esc` backs out. Nothing in the game needs a pointer.
+
+Gamepads are also supported, and the primary binding of every action is remappable in Settings.
+
+**Hold lock is how you actually hit things.** Press `Tab` to pick a target, then hold `T`: the
+ship walks its nose onto the intercept point — where the target *will be* when your shot
+arrives, not where it is now — and a bracket plus a tether line on the HUD shows it happening.
+The assist stops the instant you touch a steering key, so it can never fight you for control,
+and a ring around the bracket fills up as it approaches its turn-rate limit — when that ring is
+full, the target is out-turning the assist and it needs you to help. Let go of the steering keys
+and it picks straight back up.
 
 **Drift is the mechanic worth learning.** Holding it decouples your heading from your velocity,
 so the ship keeps its momentum while the nose swings free. It is the only way to hold guns on

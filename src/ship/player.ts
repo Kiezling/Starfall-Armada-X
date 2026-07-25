@@ -68,6 +68,7 @@ export function createPlayerState(init: PlayerInit): PlayerState {
     charge: 0,
 
     lockedTargetId: -1,
+    hardLock: false,
 
     stats,
     alive: true,
@@ -360,6 +361,7 @@ export class PlayerSystem {
     p.velocity.set(0, 0, 0);
     p.quaternion.identity();
     p.angular.set(0, 0, 0);
+    p.hardLock = false;
 
     p.hull = p.stats.maxHull;
     p.shield = p.stats.maxShield;

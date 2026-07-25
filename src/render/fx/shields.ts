@@ -333,20 +333,24 @@ void main() {
 
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float ndotv = clamp(dot(viewDir, normalize(vWorldNormal)), 0.0, 1.0);
-  float fresnel = pow(1.0 - ndotv, 2.5);
+  // A tight rim. Higher exponent than a typical fresnel because this shell sits only a couple
+  // of metres off the hull: anything softer wraps across the ship's own silhouette.
+  float fresnel = pow(1.0 - ndotv, 3.4);
 
   float ripple = 0.0;
   for (int i = 0; i < ${RIPPLE_SLOTS}; i++) ripple += rippleContribution(vObjDir, i);
   ripple = clamp(ripple, 0.0, 1.5);
 
-  // Nearly transparent face-on (fresnel ~ 0 dominates the base term), brightening hard at
-  // grazing angles — the shell must never obscure the fight when the player looks straight at
-  // an enemy, only read as a presence at its silhouette.
-  float base = hexFill + hexLine * 0.7;
-  float alpha = clamp((base * 0.3 + fresnel * 0.65) * uFraction + ripple * 0.55, 0.0, 1.0);
+  // Nearly invisible face-on, brightening hard at grazing angles. The hex weave is gated on
+  // fresnel too, not just added to it: an ungated weave draws a lit mesh straight across the
+  // player's own ship, which is the one thing on screen that must always stay readable. At
+  // rest this should be a faint rim you stop noticing; a ripple is what makes it announce
+  // itself, and only for as long as the hit lasts.
+  float weave = (hexFill + hexLine * 0.7) * fresnel;
+  float alpha = clamp((weave * 0.5 + fresnel * fresnel * 0.55) * uFraction + ripple * 0.6, 0.0, 1.0);
   if (alpha <= 0.003) discard;
 
-  vec3 col = uColor * (0.5 + fresnel * 1.3 + hexLine * 0.7) + vec3(1.0) * ripple * 0.5;
+  vec3 col = uColor * (0.35 + fresnel * 1.6 + hexLine * fresnel * 0.9) + vec3(1.0) * ripple * 0.6;
   gl_FragColor = vec4(col, alpha);
 }
 `;

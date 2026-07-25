@@ -278,6 +278,8 @@ export interface PlayerState {
   charge: number;
 
   lockedTargetId: number;
+  /** True while the player holds hard lock on a live target — drives the HUD lock state. */
+  hardLock: boolean;
 
   stats: PlayerStats;
   alive: boolean;
@@ -497,6 +499,10 @@ export interface Settings {
 export type InputAction =
   | 'firePrimary'
   | 'fireSecondary'
+  | 'pitchUp'
+  | 'pitchDown'
+  | 'yawLeft'
+  | 'yawRight'
   | 'throttleUp'
   | 'throttleDown'
   | 'strafeLeft'
@@ -506,14 +512,21 @@ export type InputAction =
   | 'boost'
   | 'drift'
   | 'cycleTarget'
+  | 'lockTarget'
+  | 'swapWeapon'
   | 'reroll'
   | 'pause';
 
 /** A snapshot of input for one simulation step. Read-only to consumers. */
 export interface InputState {
-  /** Reticle position in normalised device coordinates, -1..1 on both axes. */
+  /**
+   * Steering axes, -1..1. Keyboard aim keys drive these directly; a mouse or gamepad, when
+   * present, writes the same two numbers. Zero means "hold the current heading".
+   */
   readonly aimX: number;
   readonly aimY: number;
+  /** True while the player is actively steering, which suspends lock-on tracking assist. */
+  readonly steering: boolean;
   /** -1..1 throttle axis. */
   readonly throttle: number;
   /** -1..1 lateral strafe axis. */

@@ -3,10 +3,19 @@
  *
  * This is the single most important system for game feel, and the one where the genre most
  * often loses players. The research (DESIGN.md §2) is blunt about it: full 6DOF causes
- * disorientation and motion sickness, and auto-levelling is the standard mitigation. So this
- * model gives full pitch and yaw, strafing, and free roll *while the player asks for it* — but
- * always returns the horizon to level when they let go. The player can never end up inverted
- * and lost.
+ * disorientation and motion sickness, and auto-levelling is the standard mitigation.
+ *
+ * So orientation is not a free-floating quaternion that integrates whatever rotation arrives.
+ * It is three scalars — heading, pitch, bank — rebuilt into a quaternion every step:
+ *
+ *   quaternion = Ry(yaw) · Rx(pitch) · Rz(roll)
+ *
+ * That single choice is what makes the ship *unflippable*. Pitch is hard-clamped short of
+ * vertical, so the nose can never carry over the top and come out inverted, and bank always
+ * has a true "level" to return to because it is measured, not accumulated. An integrating
+ * model has neither guarantee: small errors compound, and one long pull on the nose leaves the
+ * player upside down with no idea which way is up. Barrel rolls still work — roll is a full
+ * ±180° of manual authority on top of the level frame — they just always unwind.
  *
  * It is not Newtonian, deliberately. Pure momentum drift is the least readable option in a
  * dogfight. Instead velocity chases a target vector with a critically-damped approach, which
@@ -22,24 +31,32 @@ import type { InputState, PlayerState } from '../core/types';
 import { ARENA, PLAYER } from '../core/constants';
 import {
   FORWARD,
-  WORLD_UP,
   clamp,
   dampVec3,
   moveTowards,
   scratchVec3A,
   scratchVec3B,
   scratchVec3C,
-  scratchVec3D,
 } from '../core/math';
 
 /* Module-level scratch. Reused every step so the flight model allocates nothing. */
 const forward = /*#__PURE__*/ new THREE.Vector3();
 const right = /*#__PURE__*/ new THREE.Vector3();
-const up = /*#__PURE__*/ new THREE.Vector3();
-const levelUp = /*#__PURE__*/ new THREE.Vector3();
 const targetVelocity = /*#__PURE__*/ new THREE.Vector3();
-const stepRotation = /*#__PURE__*/ new THREE.Quaternion();
-const stepEuler = /*#__PURE__*/ new THREE.Euler();
+const orientationEuler = /*#__PURE__*/ new THREE.Euler(0, 0, 0, 'YXZ');
+
+/**
+ * Hard ceiling on pitch, in radians (~78°). Short of vertical on purpose: the last few degrees
+ * are where a nose-up pull would tip over the top and invert, and they buy nothing — the ship
+ * can already climb faster than anything in the arena can follow.
+ */
+const MAX_PITCH = 1.36;
+/**
+ * How much of the on-screen turn rate is preserved when pitched steeply. Yaw is a rotation
+ * about world up, so at high pitch a given yaw rate barely moves the nose across the screen;
+ * dividing by cos(pitch) compensates. Floored so the compensation stays bounded near vertical.
+ */
+const MIN_YAW_COMPENSATION = 0.5;
 
 export interface FlightResult {
   /** Signed yaw rate this step, for the visual banking of wings and the camera lean. */
@@ -49,6 +66,8 @@ export interface FlightResult {
   speedFraction: number;
   /** True while the boundary is pushing the player back inward. */
   atBoundary: number;
+  /** 0..1 how hard the lock-tracking assist is working, for the HUD lock readout. */
+  lockTracking: number;
 }
 
 export class FlightModel {
@@ -57,16 +76,24 @@ export class FlightModel {
     pitchRate: 0,
     speedFraction: 0,
     atBoundary: 0,
+    lockTracking: 0,
   };
 
-  /** Roll angle relative to level, carried between steps so banking is continuous. */
-  private rollAngle = 0;
+  /** Heading about world up. Wraps freely — there is no "wrong way round" for yaw. */
+  private yaw = 0;
+  /** Nose elevation, always within ±MAX_PITCH. This clamp is what forbids inversion. */
+  private pitch = 0;
+  /** Bank relative to level. Manual roll drives it; auto-level returns it to the turn's bank. */
+  private roll = 0;
 
   /**
    * Advances one fixed simulation step.
    *
    * @param speedBuffMult Transient speed multiplier from augment procs (Slipstream, Evasive
    *        Protocols). Kept out of PlayerState so buff bookkeeping stays in one place.
+   * @param trackDir Unit direction toward the locked target's intercept point, or null when
+   *        nothing is locked. Drives the tracking assist.
+   * @param trackStrength 0..1 authority for that assist: 1 while hard lock is held.
    */
   update(
     player: PlayerState,
@@ -74,14 +101,11 @@ export class FlightModel {
     dt: number,
     arenaRadius: number,
     speedBuffMult: number,
+    trackDir: THREE.Vector3 | null,
+    trackStrength: number,
   ): FlightResult {
     const stats = player.stats;
     const def = player.def;
-
-    // --- Basis vectors -----------------------------------------------------------------------
-    forward.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
-    right.set(1, 0, 0).applyQuaternion(player.quaternion).normalize();
-    up.set(0, 1, 0).applyQuaternion(player.quaternion).normalize();
 
     // --- Boost --------------------------------------------------------------------------------
     // Boost is gated on a rearm threshold so an empty meter cannot be feathered for a permanent
@@ -108,16 +132,30 @@ export class FlightModel {
     const driftMult = player.drifting ? PLAYER.driftTurnBonus + stats.driftTurnBonus : 1;
     const turnRate = def.turnRate * stats.turnRateMult * driftMult;
 
-    // The reticle position maps to a *rate*, not an angle. Squaring the magnitude while keeping
-    // the sign gives fine control near centre and full authority at the edge.
-    const aimX = input.aimX;
-    const aimY = input.aimY;
-    const desiredYaw = -signedSquare(aimX) * turnRate;
-    const desiredPitch = signedSquare(aimY) * turnRate;
+    // Steering maps to a *rate*, not an angle. Squaring the magnitude while keeping the sign
+    // gives fine control on a light tap and full authority on a held key.
+    const desiredYaw = -signedSquare(input.aimX) * turnRate;
+    const desiredPitch = signedSquare(input.aimY) * turnRate;
 
     const accel = PLAYER.angularAcceleration * dt;
     player.angular.x = moveTowards(player.angular.x, desiredPitch, accel);
     player.angular.y = moveTowards(player.angular.y, desiredYaw, accel);
+
+    // Yaw is a world-up rotation, so it has to be scaled up when pitched steeply or the nose
+    // would crawl across the screen exactly when the player is pulling hardest.
+    const yawCompensation = 1 / Math.max(MIN_YAW_COMPENSATION, Math.cos(this.pitch));
+    this.yaw = wrapAngle(this.yaw + player.angular.y * yawCompensation * dt);
+    this.pitch = clamp(this.pitch + player.angular.x * dt, -MAX_PITCH, MAX_PITCH);
+
+    // Pitch is clamped, not wrapped, so the integrated rate has to be zeroed at the stop —
+    // otherwise the accumulated rate would fight the clamp and the nose would feel sticky when
+    // the player finally pulls the other way.
+    if (Math.abs(this.pitch) >= MAX_PITCH - 1e-6 && Math.sign(player.angular.x) === Math.sign(this.pitch)) {
+      player.angular.x = 0;
+    }
+
+    // --- Lock tracking assist -------------------------------------------------------------------
+    const tracking = this.applyTrackingAssist(input, trackDir, trackStrength, turnRate, dt);
 
     // --- Roll: manual, or auto-level with a bank into the turn ---------------------------------
     const rollInput = input.roll;
@@ -126,21 +164,20 @@ export class FlightModel {
     if (Math.abs(rollInput) > 0.01) {
       // Manual roll overrides levelling entirely, so barrel rolls are possible on demand.
       player.angular.z = rollInput * PLAYER.rollRate;
-      this.rollAngle += player.angular.z * dt;
+      this.roll = wrapAngle(this.roll + player.angular.z * dt);
     } else {
-      this.rollAngle = this.measureRoll(player);
-      const error = bankTarget - this.rollAngle;
+      const error = wrapAngle(bankTarget - this.roll);
       // Divide by the auto-level time so the correction is a rate, not a spring constant, and
       // clamp it to the manual roll rate so levelling never out-spins the player.
       player.angular.z = clamp(error / PLAYER.autoLevelTime, -PLAYER.rollRate, PLAYER.rollRate);
+      this.roll = wrapAngle(this.roll + player.angular.z * dt);
     }
 
-    // Integrate the orientation. Local-space rotation composed onto the current quaternion.
-    stepEuler.set(player.angular.x * dt, player.angular.y * dt, player.angular.z * dt, 'XYZ');
-    stepRotation.setFromEuler(stepEuler);
-    player.quaternion.multiply(stepRotation).normalize();
+    // Rebuild the orientation from the three scalars rather than composing onto the previous
+    // quaternion. Nothing accumulates, so nothing can drift out of the level frame.
+    orientationEuler.set(this.pitch, this.yaw, this.roll, 'YXZ');
+    player.quaternion.setFromEuler(orientationEuler);
 
-    // Recompute the basis after rotating so thrust applies along the new heading.
     forward.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
     right.set(1, 0, 0).applyQuaternion(player.quaternion).normalize();
 
@@ -180,30 +217,57 @@ export class FlightModel {
     this.result.pitchRate = player.angular.x;
     this.result.speedFraction = clamp(speed / Math.max(1, def.maxSpeed * stats.speedMult), 0, 2);
     this.result.atBoundary = boundary;
+    this.result.lockTracking = tracking;
     return this.result;
   }
 
   /**
-   * Signed roll relative to "level", measured about the ship's forward axis.
+   * Rotates heading and pitch toward the locked target's intercept point.
    *
-   * Level is world-up projected perpendicular to forward. When the nose points nearly straight
-   * up or down that projection degenerates, so we fall back to the ship's own right vector —
-   * which keeps the value continuous instead of snapping through a singularity.
+   * This is the single most important accessibility feature in the game. Without a mouse there
+   * is no fast, high-resolution way to place the nose on a moving ship, so the lock does that
+   * part: it converges the nose onto the lead point at a bounded rate, and the player spends
+   * their attention on positioning, throttle, and when to shoot.
+   *
+   * Two rules keep it honest. It **yields entirely to manual steering** — the instant a
+   * steering key goes down the assist stops contributing, so it can never fight the player for
+   * the nose. And it is **rate-limited, not a snap**: it converges proportionally to how far
+   * off it is, capped below the ship's own turn rate, so a target crossing fast still has to be
+   * flown to rather than being pinned for free.
+   *
+   * @returns 0..1 how hard the assist is currently working, for the HUD's lock readout.
    */
-  private measureRoll(player: PlayerState): number {
-    forward.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
-    up.set(0, 1, 0).applyQuaternion(player.quaternion).normalize();
+  private applyTrackingAssist(
+    input: InputState,
+    trackDir: THREE.Vector3 | null,
+    strength: number,
+    turnRate: number,
+    dt: number,
+  ): number {
+    if (!trackDir || strength <= 0 || input.steering) return 0;
 
-    const alignment = Math.abs(forward.dot(WORLD_UP));
-    if (alignment > 0.995) return this.rollAngle;
+    const targetPitch = clamp(Math.asin(clamp(trackDir.y, -1, 1)), -MAX_PITCH, MAX_PITCH);
+    const targetYaw = Math.atan2(-trackDir.x, -trackDir.z);
 
-    levelUp.copy(WORLD_UP).addScaledVector(forward, -WORLD_UP.dot(forward)).normalize();
+    const yawError = wrapAngle(targetYaw - this.yaw);
+    const pitchError = targetPitch - this.pitch;
+    const error = Math.hypot(yawError, pitchError);
+    if (error < 1e-4) return 0;
 
-    const dot = clamp(levelUp.dot(up), -1, 1);
-    const angle = Math.acos(dot);
-    scratchVec3D.copy(levelUp).cross(up);
-    const sign = scratchVec3D.dot(forward) >= 0 ? 1 : -1;
-    return angle * sign;
+    // Proportional convergence with a ceiling. TRACK_CONVERGENCE is a 1/seconds gain, so the
+    // nose closes most of a small error inside a few frames while a large one is still capped.
+    const maxRate = turnRate * strength * PLAYER.trackMaxRateFraction;
+    const rate = Math.min(error * PLAYER.trackConvergence, maxRate);
+    const stepAngle = Math.min(rate * dt, error);
+    const scale = stepAngle / error;
+
+    this.yaw = wrapAngle(this.yaw + yawError * scale);
+    this.pitch = clamp(this.pitch + pitchError * scale, -MAX_PITCH, MAX_PITCH);
+
+    // Report saturation, not raw error: a bar that pegs at 1 whenever the target is far away
+    // tells the player nothing. This reads "the assist is at its limit", which is the cue to
+    // help it by turning.
+    return clamp(rate / Math.max(1e-3, maxRate), 0, 1);
   }
 
   private updateDrift(player: PlayerState, input: InputState, dt: number): void {
@@ -261,18 +325,35 @@ export class FlightModel {
     return clamp(overshoot, 0, 1);
   }
 
+  /** Re-derives the yaw/pitch/roll scalars from a quaternion set outside the model. */
+  syncFrom(quaternion: THREE.Quaternion): void {
+    orientationEuler.setFromQuaternion(quaternion, 'YXZ');
+    this.pitch = clamp(orientationEuler.x, -MAX_PITCH, MAX_PITCH);
+    this.yaw = orientationEuler.y;
+    this.roll = orientationEuler.z;
+  }
+
   reset(): void {
-    this.rollAngle = 0;
+    this.yaw = 0;
+    this.pitch = 0;
+    this.roll = 0;
     this.result.yawRate = 0;
     this.result.pitchRate = 0;
     this.result.speedFraction = 0;
     this.result.atBoundary = 0;
+    this.result.lockTracking = 0;
   }
 }
 
 /** Keeps the sign but squares the magnitude: fine control near centre, full authority at edge. */
 function signedSquare(v: number): number {
   return v * Math.abs(v);
+}
+
+/** Normalises an angle to (-π, π]. Keeps heading and bank errors taking the short way round. */
+function wrapAngle(a: number): number {
+  const wrapped = (a + Math.PI) % (Math.PI * 2);
+  return (wrapped < 0 ? wrapped + Math.PI * 2 : wrapped) - Math.PI;
 }
 
 /**

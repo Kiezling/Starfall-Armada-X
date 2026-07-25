@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { ARENA } from '../core/constants';
 import { Rng } from '../core/rng';
 import { palette, color } from './palette';
+import { SUN_COLOR, SUN_DIRECTION } from './starfield';
 import {
   clamp01,
   easeInOutCubic,
@@ -89,15 +90,23 @@ const NOISE_GLSL = /* glsl */ `
 
 const BOUNDARY_VERTEX = /* glsl */ `
   varying vec3 vDir;
+  varying float vViewDist;
   void main() {
     // Unit sphere geometry scaled by radius each frame: local position already is direction.
     vDir = normalize(position);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    // Distance from the camera to this patch of shell, so the far side can be faded out. A
+    // containment field the player can see the far wall of through has no depth at all.
+    vViewDist = -mv.z;
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
 const BOUNDARY_FRAGMENT = /* glsl */ `
   varying vec3 vDir;
+  varying float vViewDist;
+  uniform float uNearFade;
+  uniform float uFarFade;
   uniform vec3 uPlayerDir;
   uniform float uPlayerFrac;
   uniform float uTime;
@@ -127,11 +136,13 @@ const BOUNDARY_FRAGMENT = /* glsl */ `
     // agree along their shared edge, the pattern is continuous across the tessellation.
     vec3 dir = normalize(vDir);
 
-    // 44 cells around the equator rather than 2*PI*7 (=43.98): an integer count means the
+    // 72 cells around the equator rather than 2*PI*12 (=75.4): an integer count means the
     // hex grid wraps cleanly across the atan() branch cut instead of leaving a seam meridian.
+    // Finer cells than the eye can resolve at range are the point — the shell should read as a
+    // fine mesh far away, not as a handful of huge panels right in front of the camera.
     float az = atan(dir.z, dir.x);
     float inc = acos(clamp(dir.y, -1.0, 1.0));
-    vec2 uv = vec2(az * (44.0 / 6.28318531), inc * 7.0);
+    vec2 uv = vec2(az * (72.0 / 6.28318531), inc * 12.0);
     float hex = hexLines(uv);
 
     // Overall brightness ramps with how close the player is to the edge (95%/100% per the
@@ -144,7 +155,20 @@ const BOUNDARY_FRAGMENT = /* glsl */ `
     // A slow scan-line sweep so the shell reads as active tech, not a painted-on texture.
     float scan = pow(sin(dir.y * 18.0 - uTime * 1.1) * 0.5 + 0.5, 5.0);
 
-    float intensity = hex * (0.035 + edgeGlow * 0.55 + localGlow * 1.6) + scan * (0.05 + edgeGlow * 0.2);
+    // Distance haze. Without this the far wall renders at the same strength as the near one,
+    // which flattens the arena into a lit cage around the camera and reads as the dominant
+    // object in every frame. Fading it out with distance restores the sense that the shell is
+    // a *boundary* far away, and lets the ships and the sky carry the image instead.
+    float depthFade = 1.0 - smoothstep(uNearFade, uFarFade, vViewDist);
+    depthFade = 0.1 + depthFade * 0.9;
+
+    // Grazing angles catch the light: the shell is a surface, and the part of it you are
+    // looking along should read brighter than the part you are looking straight at.
+    float facing = abs(dot(dir, normalize(uPlayerDir)));
+    float graze = 0.55 + 0.45 * (1.0 - facing);
+
+    float intensity = hex * (0.02 + edgeGlow * 0.5 + localGlow * 1.6) + scan * (0.02 + edgeGlow * 0.18);
+    intensity *= depthFade * graze;
     gl_FragColor = vec4(uColor, clamp(intensity, 0.0, 1.0));
   }
 `;
@@ -152,9 +176,16 @@ const BOUNDARY_FRAGMENT = /* glsl */ `
 const ASTEROID_VERTEX = /* glsl */ `
   uniform float uTime;
   varying vec3 vNormal;
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
   varying float vShade;
 
   ${NOISE_GLSL}
+
+  // The displacement field, factored out so the normal can be re-derived from the same data.
+  float rockField(vec3 p, vec3 seed) {
+    return fbm(p * 1.8 + seed * 0.6) - 0.5;
+  }
 
   void main() {
     // Every instance shares one geometry; per-instance shape variety comes entirely from
@@ -162,10 +193,27 @@ const ASTEROID_VERTEX = /* glsl */ `
     // seed, so no two asteroids deform alike despite there being only one vertex buffer.
     vec3 seed = instanceMatrix[3].xyz;
     float s = hash31(seed);
-    vec3 displaced = position + normal * (fbm(position * 1.8 + seed * 0.6) - 0.5) * 0.4;
+    vec3 displaced = position + normal * rockField(position, seed) * 0.52;
+
+    // Re-derive the normal from the displaced surface by finite differences along two
+    // tangents. Shading with the *undisplaced* normal — as this did — is what made the field
+    // read as smooth clay: the silhouette was lumpy but the shading underneath was a plain
+    // sphere, so no crease or facet ever caught the light.
+    vec3 t1 = normalize(abs(normal.y) < 0.9 ? cross(normal, vec3(0.0, 1.0, 0.0)) : cross(normal, vec3(1.0, 0.0, 0.0)));
+    vec3 t2 = cross(normal, t1);
+    float e = 0.06;
+    vec3 pa = position + t1 * e;
+    vec3 pb = position + t2 * e;
+    vec3 da = (pa + normal * rockField(pa, seed) * 0.52) - displaced;
+    vec3 db = (pb + normal * rockField(pb, seed) * 0.52) - displaced;
+    vec3 objNormal = normalize(cross(da, db));
+    // The cross product's winding depends on the tangent frame; align it to the sphere normal.
+    objNormal *= sign(dot(objNormal, normal));
 
     vec4 worldPos = instanceMatrix * vec4(displaced, 1.0);
-    vNormal = normalize(mat3(instanceMatrix) * normal);
+    vNormal = normalize(mat3(instanceMatrix) * objNormal);
+    vWorldPos = worldPos.xyz;
+    vObjPos = displaced;
     vShade = s;
     gl_Position = projectionMatrix * modelViewMatrix * worldPos;
   }
@@ -173,15 +221,51 @@ const ASTEROID_VERTEX = /* glsl */ `
 
 const ASTEROID_FRAGMENT = /* glsl */ `
   varying vec3 vNormal;
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
   varying float vShade;
   uniform vec3 uColor;
   uniform vec3 uLightDir;
+  uniform vec3 uSunColor;
+  uniform vec3 uFillColor;
+
+  ${NOISE_GLSL}
 
   void main() {
-    float ndotl = max(dot(normalize(vNormal), uLightDir), 0.0);
-    float shade = 0.28 + ndotl * 0.72;
-    vec3 tint = uColor * (0.82 + vShade * 0.36);
-    gl_FragColor = vec4(tint * shade, 1.0);
+    vec3 n = normalize(vNormal);
+    vec3 viewDir = normalize(cameraPosition - vWorldPos);
+
+    // Surface detail: two noise bands standing in for regolith grain and crater pitting.
+    // Cheap, and it is what stops a low-poly rock reading as a matte blob up close.
+    float grain = fbm(vObjPos * 9.0 + vShade * 20.0);
+    float pits = smoothstep(0.62, 0.78, fbm(vObjPos * 4.2 + vShade * 7.0));
+
+    // Key from the sun, warm; fill from the opposite side in nebula cyan, standing in for
+    // bounce. Two-tone light on a grey rock is most of the difference between "asteroid" and
+    // "clay ball" — a single lamp gives one falloff and nothing else.
+    float ndotl = max(dot(n, uLightDir), 0.0);
+    float fill = max(dot(n, -uLightDir) * 0.5 + 0.5, 0.0);
+    // Wrapped diffuse: real regolith scatters well past the terminator.
+    float wrapped = max((dot(n, uLightDir) + 0.35) / 1.35, 0.0);
+
+    vec3 albedo = uColor * (0.55 + vShade * 0.3) * (0.72 + grain * 0.5);
+    albedo *= 1.0 - pits * 0.45;
+
+    vec3 lit = albedo * uSunColor * wrapped * 1.35;
+    lit += albedo * uFillColor * fill * 0.28;
+    lit += albedo * 0.05;
+
+    // Rim: a thin bright edge away from the camera, so a rock stays a readable silhouette
+    // against the nebula instead of dissolving into it.
+    float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
+    lit += mix(uFillColor, uSunColor, ndotl) * rim * 0.55;
+
+    // A dull specular sheen on the lit side only — ice and metal in the regolith.
+    vec3 h = normalize(uLightDir + viewDir);
+    float spec = pow(max(dot(n, h), 0.0), 26.0) * ndotl * (0.25 + grain * 0.4);
+    lit += uSunColor * spec * 0.5;
+
+    gl_FragColor = vec4(lit, 1.0);
   }
 `;
 
@@ -300,6 +384,8 @@ export class Arena {
         uPlayerDir: { value: new THREE.Vector3(0, 0, 1) },
         uPlayerFrac: { value: 0 },
         uTime: { value: 0 },
+        uNearFade: { value: this._radius * 0.5 },
+        uFarFade: { value: this._radius * 2.0 },
         uColor: { value: color(palette().arenaBoundary).clone() },
       },
     });
@@ -309,14 +395,19 @@ export class Arena {
     scene.add(this.boundaryMesh);
 
     /* Debris Belt asteroids ---------------------------------------------------------------- */
-    this.asteroidGeometry = new THREE.IcosahedronGeometry(1, 1);
+    // Detail 2 (162 vertices): enough for the displacement to carve real facets, still one
+    // shared buffer across all 90 instances.
+    this.asteroidGeometry = new THREE.IcosahedronGeometry(1, 2);
     this.asteroidMaterial = new THREE.ShaderMaterial({
       vertexShader: ASTEROID_VERTEX,
       fragmentShader: ASTEROID_FRAGMENT,
       uniforms: {
         uTime: { value: 0 },
-        uColor: { value: color(palette().hudDim).clone() },
-        uLightDir: { value: new THREE.Vector3(0.4, 0.8, 0.35).normalize() },
+        uColor: { value: new THREE.Color(0x6d6f7d) },
+        // The same vector the sky draws its sun along and the scene keys its light from.
+        uLightDir: { value: SUN_DIRECTION.clone() },
+        uSunColor: { value: new THREE.Color(SUN_COLOR) },
+        uFillColor: { value: color(palette().arenaBoundary).clone() },
       },
     });
     this.asteroidMesh = new THREE.InstancedMesh(this.asteroidGeometry, this.asteroidMaterial, ASTEROID_COUNT);
@@ -411,6 +502,10 @@ export class Arena {
     this.boundaryMesh.scale.setScalar(this._radius);
     const bu = this.boundaryMaterial.uniforms;
     bu.uTime.value = elapsed;
+    // The fade band scales with the arena so a contracting Maw arena does not simply become a
+    // brighter cage as its walls close in.
+    bu.uNearFade.value = this._radius * 0.5;
+    bu.uFarFade.value = this._radius * 2.0;
     const playerDist = playerPos.length();
     bu.uPlayerFrac.value = clamp01(playerDist / this._radius);
     if (playerDist > 0.001) {
