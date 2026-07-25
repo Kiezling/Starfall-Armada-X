@@ -12,14 +12,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
 - [x] Verify build pipeline end-to-end (`tsc --noEmit && vite build`)
 - [x] `DESIGN.md` — full design document grounded in genre research
 - [x] `CHECKLIST.md` — this file
-- [ ] `core/types.ts` — shared type contract
-- [ ] `core/constants.ts` — central tunables
-- [ ] `core/math.ts` — damping, springs, easing, scratch vectors, zero-alloc helpers
-- [ ] `core/rng.ts` — seeded mulberry32, weighted pick, shuffle
-- [ ] `core/pool.ts` — generic zero-alloc object pool
-- [ ] `core/events.ts` — typed event bus
-- [ ] `core/time.ts` — fixed timestep, timescale, hit-stop
-- [ ] `core/spatial.ts` — uniform-grid broad-phase collision
+- [x] `core/types.ts` — shared type contract
+- [x] `core/constants.ts` — central tunables
+- [x] `core/math.ts` — damping, springs, easing, scratch vectors, zero-alloc helpers
+- [x] `core/rng.ts` — seeded mulberry32, weighted pick, shuffle
+- [x] `core/pool.ts` — generic zero-alloc object pool
+- [x] `core/events.ts` — typed event bus
+- [x] `core/time.ts` — fixed timestep, timescale, hit-stop
+- [x] `core/spatial.ts` — uniform-grid broad-phase collision
 - [ ] `core/input.ts` — keyboard, mouse, gamepad, remapping
 - [ ] `core/settings.ts` — settings model + persistence
 - [ ] `core/save.ts` — meta-progression persistence
@@ -30,7 +30,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done & verified
 - [ ] Post-processing chain: RenderPass → UnrealBloom (half-res) → Output
 - [ ] Adaptive quality tiers driven by rolling frame time
 - [ ] Proper resize handling incl. devicePixelRatio cap
-- [ ] `render/palette.ts` — colour system + 4 colourblind modes
+- [x] `render/palette.ts` — colour system + 4 colourblind modes
 - [ ] `render/camera.ts` — chase camera, critically-damped spring follow
 - [ ] Trauma-based directional screen shake with accessibility scaling
 - [ ] FOV kick on boost and heavy hits
