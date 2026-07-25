@@ -4,7 +4,14 @@ name: Deploy to GitHub Pages
 # for the repository with "GitHub Actions" as the source (Settings → Pages).
 on:
   push:
-    branches: [main]
+    # The game lives on a feature branch until it merges, and workflow_dispatch is only
+    # offered for workflows present on the default branch — which this one is not yet. A push
+    # trigger runs the workflow from the pushed branch, so listing the branches here is what
+    # actually makes the game deployable before the merge.
+    branches:
+      - main
+      - claude/threejs-space-fighter-game-sxus1u
+      - claude/starfall-visual-bugs-w2l13w
   workflow_dispatch:
 
 permissions:
