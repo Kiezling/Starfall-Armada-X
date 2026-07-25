@@ -315,6 +315,58 @@ export interface PlayerStats {
   lifesteal: number;
   /** Fraction of an enemy's max HP detonated on death. 0 disables Chain Reaction. */
   chainReaction: number;
+
+  /* --- Rule-changing flags, set by Systems augments -------------------------------------- */
+  /* These are the build-defining picks. Each one is a branch in a system, not a number. */
+
+  /** Heat no longer locks out firing; overheating detonates around the player instead. */
+  overchargeVents: boolean;
+  /** Every Nth shot fires a delayed phantom copy. 0 disables. */
+  echoRoundsEvery: number;
+  /** Damage required to charge a free Lance shot. 0 disables. */
+  kineticBatteryCharge: number;
+  /** Seconds of slow-motion granted by a near miss. 0 disables. */
+  nearMissSlowMo: number;
+  /** Shields reflect the projectile that broke them. */
+  aegisReversal: boolean;
+  /** Healing above max hull becomes temporary shield. */
+  overhealToShield: boolean;
+  /** Once-per-sector survival of an otherwise lethal hit. */
+  secondWind: boolean;
+  /** Damage reduction granted for 3s after taking a hit. 0 disables. */
+  reactiveArmor: number;
+  /** Extra damage reduction that applies only while shields are up. */
+  shieldedDR: number;
+  /** Fraction of shields restored when they break. */
+  shieldBreakRefund: number;
+
+  /** Bonus damage multiplier applied within `pointBlankRange`. 0 disables. */
+  pointBlankBonus: number;
+  pointBlankRange: number;
+  /** Bonus damage multiplier against enemies below 25% hull. 0 disables. */
+  executeBonus: number;
+  /** Bonus damage multiplier at full speed, scaling from 0. 0 disables. */
+  momentumBonus: number;
+  /** Bonus damage multiplier against the currently locked target. */
+  lockedTargetBonus: number;
+  /** Speed multiplier granted for 2s on kill. 0 disables. */
+  killSpeedBonus: number;
+  /** Speed multiplier granted for 1.5s after taking damage. 0 disables. */
+  hitSpeedBonus: number;
+  /** Turn-rate multiplier that applies only while drifting. */
+  driftTurnBonus: number;
+  /** Drift cooldown multiplier. */
+  driftCooldownMult: number;
+
+  /** Homing turn rate granted to projectiles that would otherwise fly straight. */
+  homingBonus: number;
+  /** Salvage pickup radius multiplier. */
+  magnetMult: number;
+  /** Extra secondary charges. */
+  secondaryCharges: number;
+  secondaryCooldownMult: number;
+  /** Additive bonus to the Prototype rarity weight in drafts. */
+  prototypeLuck: number;
 }
 
 /* ------------------------------------------------------------------------------------------ */
