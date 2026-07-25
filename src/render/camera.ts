@@ -35,6 +35,8 @@ const CAM_FORWARD = /*#__PURE__*/ new THREE.Vector3();
 const CAM_RIGHT = /*#__PURE__*/ new THREE.Vector3();
 const CAM_UP = /*#__PURE__*/ new THREE.Vector3();
 const CAM_TO_SHIP = /*#__PURE__*/ new THREE.Vector3();
+/** The ship's own up axis, world-transformed each frame -- see the note on its use below. */
+const CAM_REF_UP = /*#__PURE__*/ new THREE.Vector3();
 const AXIS_X = /*#__PURE__*/ new THREE.Vector3(1, 0, 0);
 const AXIS_Y = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
 const AXIS_Z = /*#__PURE__*/ new THREE.Vector3(0, 0, 1);
@@ -115,7 +117,19 @@ export class ChaseCamera {
     this.camera.position.z = springDamp(this.camera.position.z, CAM_IDEAL_POS.z, this.posVelZ, CAMERA.positionSmoothTime, dt);
 
     // Rotation: frame-rate independent exponential slerp toward the look-at orientation.
-    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, WORLD_UP);
+    // The reference "up" for this must come from the ship's own orientation, not world space:
+    // the flight model has no pitch limit and no gimbal lock (there is no up/down in space), so
+    // whenever the nose points near world-up or world-down, a world-space up hint goes nearly
+    // parallel to the view direction and `lookAt`'s cross products degenerate, snapping the
+    // camera's roll unpredictably. The ship's own up axis is always perpendicular to its
+    // forward, so this reference never degenerates at any attitude. The death-cam orbit is a
+    // fixed cinematic shot, not player-attitude-driven, so it keeps the world-up reference.
+    if (this.deathCam) {
+      CAM_REF_UP.copy(WORLD_UP);
+    } else {
+      CAM_REF_UP.set(0, 1, 0).applyQuaternion(player.quaternion);
+    }
+    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, CAM_REF_UP);
     scratchQuatA.setFromRotationMatrix(scratchMat4A);
     const rotT = clamp01(1 - Math.exp(-dt / CAMERA.rotationSmoothTime));
     this.camera.quaternion.slerp(scratchQuatA, rotT);
@@ -227,7 +241,10 @@ export class ChaseCamera {
 
     CAM_FORWARD.copy(FORWARD).applyQuaternion(player.quaternion);
     CAM_LOOK_TARGET.copy(player.position).addScaledVector(CAM_FORWARD, CAMERA.lookAhead);
-    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, WORLD_UP);
+    // Ship-relative up, matching `update()` -- see the comment there for why world-up breaks
+    // down near vertical attitudes.
+    CAM_REF_UP.set(0, 1, 0).applyQuaternion(player.quaternion);
+    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, CAM_REF_UP);
     this.camera.quaternion.setFromRotationMatrix(scratchMat4A);
 
     this.posVelX.value = 0;
