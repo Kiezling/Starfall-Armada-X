@@ -80,13 +80,18 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 
 ## Phase 4 — Combat
 
-> Open question, seen in every recorded browser session: with the primary held down for the
-> whole soak (heat climbs to 97%, so the weapon *is* firing), HOSTILES stays at 6, SCORE and
-> SALVAGE stay at 0, and `player:damaged` never fires once. Nothing dies and nothing hits
-> back. Projectiles are visible leaving the ship, so the suspect is hit resolution rather
-> than firing. Needs isolating before any Phase 4 box can be ticked.
+> Hit resolution is confirmed working. Parking the ship 60 units directly behind a live
+> enemy and holding the primary produces `enemy:damaged` events, drops the hostile count,
+> and moves SCORE and SALVAGE off zero.
+>
+> What this means for the harness: `verify.mjs --play` flies blind — it steers with fixed
+> mouse deltas and never aims — so it can go a whole soak without landing a shot. Its zero
+> kills and zero damage are a limitation of the synthetic pilot, not evidence about the
+> game. Any claim about combat, FX-on-hit, or the wave loop needs a targeted probe like the
+> one above, not a `--play` soak.
 
-- [ ] `combat/projectiles.ts` — instanced pooled projectiles (≥2000 concurrent)
+- [~] `combat/projectiles.ts` — spawning, travel, and expiry confirmed live (live count
+      climbs and plateaus under sustained fire); the ≥2000 concurrent ceiling is untested
 - [ ] Projectile behaviours: linear, homing, piercing, proximity, orbiting, forking
 - [ ] `combat/weapons.ts` — 6 primaries implemented and distinct
   - [ ] Pulse Repeater
@@ -95,14 +100,16 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
   - [ ] Arc Tether (chain lightning, ≤4 targets)
   - [ ] Flak Battery (proximity AoE)
   - [ ] Singularity Coil (pull orb)
-- [ ] Heat system: build, cap, forced vent, visual + audio feedback
+- [~] Heat system: build and cap confirmed live (climbs smoothly to 100 under sustained
+      fire and holds); forced vent and its audio cue not observed
 - [ ] 5 secondaries implemented and distinct
   - [ ] Swarm Missiles (multi-lock homing)
   - [ ] Nova Mine
   - [ ] Phase Lance (sustained beam)
   - [ ] Gravity Well
   - [ ] Aegis Pulse (bullet clear + shield refill)
-- [ ] `combat/damage.ts` — resolution, crits, armour arcs (Bulwark front)
+- [~] `combat/damage.ts` — resolution confirmed end-to-end (damage lands, hull drops,
+      score/salvage awarded, enemy dies); crits and armour arcs not separately exercised
 - [ ] `combat/targeting.ts` — lock-on, target cycling, lead indicator
 - [ ] Aim assist (Off / Light / Strong) as reticle magnetism
 - [ ] Collision: spatial-hash broad phase + sphere narrow phase
