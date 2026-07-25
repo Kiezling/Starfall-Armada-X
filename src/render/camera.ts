@@ -13,7 +13,7 @@
 import * as THREE from 'three';
 import type { PlayerState, Settings } from '../core/types';
 import { CAMERA } from '../core/constants';
-import { clamp, clamp01, damp, lerp, springDamp, scratchQuatA, scratchMat4A, WORLD_UP, FORWARD, EPSILON } from '../core/math';
+import { clamp, clamp01, damp, lerp, remap, springDamp, scratchQuatA, scratchMat4A, WORLD_UP, FORWARD, EPSILON } from '../core/math';
 
 /** Fraction of a second after which the FOV punch has settled back to the speed-driven value. */
 const FOV_PUNCH_SMOOTHING = 0.0003;
@@ -26,6 +26,20 @@ const IMPULSE_SMOOTH_TIME = 0.35;
 const MIN_SHIP_DISTANCE = CAMERA.offsetBack * 0.35;
 /** Keep the camera this fraction inside the arena radius, clear of the boundary shell. */
 const CAMERA_ARENA_MARGIN = 0.94;
+/**
+ * Camera roll reference: below this |forward·worldUp| the camera stays fully world-locked, so
+ * the horizon reads level and barrel rolls (which spin the hull's own up axis a full turn, see
+ * `FlightModel` §Roll) never flip the screen -- DESIGN.md §2's "no inverted-world states".
+ * Above `VERTICAL_BLEND_END` the reference is the camera's own previous-frame up instead of
+ * world-up, because `lookAt`'s basis construction is a cross product against the reference: as
+ * the view direction approaches parallel to worldUp that product collapses toward zero and the
+ * normalised result becomes wildly sensitive to noise, which is what made the camera whip around
+ * near vertical dives and climbs. Coasting on the camera's own already-stable up avoids ever
+ * computing that cross product near-degenerate, and blending across a band (rather than
+ * switching at one threshold) keeps the handoff continuous instead of snapping.
+ */
+const VERTICAL_BLEND_START = 0.9;
+const VERTICAL_BLEND_END = 0.98;
 
 // Module-level scratch -- borrowed within a single synchronous update() call, never retained.
 const CAM_IDEAL_POS = /*#__PURE__*/ new THREE.Vector3();
@@ -35,6 +49,9 @@ const CAM_FORWARD = /*#__PURE__*/ new THREE.Vector3();
 const CAM_RIGHT = /*#__PURE__*/ new THREE.Vector3();
 const CAM_UP = /*#__PURE__*/ new THREE.Vector3();
 const CAM_TO_SHIP = /*#__PURE__*/ new THREE.Vector3();
+/** Roll reference passed to `lookAt`; see `VERTICAL_BLEND_START` for what it holds and why. */
+const CAM_REF_UP = /*#__PURE__*/ new THREE.Vector3();
+const CAM_PREV_UP = /*#__PURE__*/ new THREE.Vector3();
 const AXIS_X = /*#__PURE__*/ new THREE.Vector3(1, 0, 0);
 const AXIS_Y = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
 const AXIS_Z = /*#__PURE__*/ new THREE.Vector3(0, 0, 1);
@@ -115,7 +132,23 @@ export class ChaseCamera {
     this.camera.position.z = springDamp(this.camera.position.z, CAM_IDEAL_POS.z, this.posVelZ, CAMERA.positionSmoothTime, dt);
 
     // Rotation: frame-rate independent exponential slerp toward the look-at orientation.
-    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, WORLD_UP);
+    // Roll reference: world-up normally, blending toward the camera's own previous up near the
+    // vertical pole so `lookAt` never has to cross-product against a near-parallel reference.
+    // See `VERTICAL_BLEND_START` -- this deliberately never reads the ship's own up axis, which
+    // carries the ship's full manual roll and would flip the screen mid-barrel-roll.
+    if (this.deathCam) {
+      CAM_REF_UP.copy(WORLD_UP);
+    } else {
+      const vertical = Math.abs(CAM_FORWARD.dot(WORLD_UP));
+      if (vertical <= VERTICAL_BLEND_START) {
+        CAM_REF_UP.copy(WORLD_UP);
+      } else {
+        CAM_PREV_UP.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+        const blend = clamp01(remap(vertical, VERTICAL_BLEND_START, VERTICAL_BLEND_END, 0, 1));
+        CAM_REF_UP.lerpVectors(WORLD_UP, CAM_PREV_UP, blend);
+      }
+    }
+    scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, CAM_REF_UP);
     scratchQuatA.setFromRotationMatrix(scratchMat4A);
     const rotT = clamp01(1 - Math.exp(-dt / CAMERA.rotationSmoothTime));
     this.camera.quaternion.slerp(scratchQuatA, rotT);
@@ -227,6 +260,8 @@ export class ChaseCamera {
 
     CAM_FORWARD.copy(FORWARD).applyQuaternion(player.quaternion);
     CAM_LOOK_TARGET.copy(player.position).addScaledVector(CAM_FORWARD, CAMERA.lookAhead);
+    // World-locked, matching `update()`'s default. There is no previous frame to blend from on
+    // a snap, and the ship always spawns level, so the near-vertical case cannot arise here.
     scratchMat4A.lookAt(this.camera.position, CAM_LOOK_TARGET, WORLD_UP);
     this.camera.quaternion.setFromRotationMatrix(scratchMat4A);
 
