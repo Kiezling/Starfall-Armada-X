@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
+    "build:single": "node scripts/build-single.mjs",
+    "verify:single": "node scripts/build-single.mjs && node scripts/verify-single.mjs",
     "verify:play": "node scripts/verify.mjs --play --seconds 12",
     "selftest": "vite build --ssr src/selftest-run.ts --outDir .selftest --logLevel error && node .selftest/selftest-run.js",
     "check": "npm run typecheck && npm run selftest && npm run verify"
