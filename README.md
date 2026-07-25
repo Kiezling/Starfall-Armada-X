@@ -26,6 +26,25 @@ npm run preview
 
 Requires Node 20+ and a browser with WebGL 2.
 
+### Playing it in a browser without a checkout
+
+`.github/workflows/pages.yml` builds the game and publishes `dist/` to GitHub Pages, which
+serves it at:
+
+```
+https://kiezling.github.io/Starfall-Armada-X/
+```
+
+Pages has to be turned on once before the first deploy can succeed: **Settings → Pages →
+Build and deployment → Source: GitHub Actions**. The workflow asks `configure-pages` to
+create the site automatically, but `GITHUB_TOKEN` is not normally permitted to do so
+(`Resource not accessible by integration`), because creating a Pages site needs
+repository-admin rights. Until that switch is flipped, the deploy job fails at
+`configure-pages` while the build, typecheck, and selftest steps before it still pass.
+
+After enabling it, re-run the latest **Deploy to GitHub Pages** run from the Actions tab —
+no new commit is needed.
+
 ---
 
 ## Controls

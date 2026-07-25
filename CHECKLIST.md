@@ -35,8 +35,12 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 - [x] Trauma-based directional screen shake with accessibility scaling
 - [x] FOV kick on boost and heavy hits
 - [x] Death camera: slow-motion orbit of the wreck
+- [x] Chase camera clamped inside the arena so it never trails through the boundary shell
 - [x] `render/starfield.ts` — procedural skybox, nebula, parallax star layers
 - [x] `render/arena.ts` — hex-grid boundary shell that brightens near the edge
+      (verified in-browser: the hexagon metric was transposed against its lattice and drew
+      triangles, `vDir` was un-normalized and flat-shaded the facets, and the angular UV left
+      a seam at the atan branch cut — all three fixed and confirmed by screenshot)
 - [x] Arena debris/asteroid field (instanced)
 - [x] Sector-specific dressing (Debris Belt / Ion Storm / The Maw)
 
@@ -47,12 +51,17 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 - [~] `render/fx/trails.ts` — ribbon engine trails for player and enemies
 - [~] `render/fx/impacts.ts` — hit sparks along reflected vector
 - [~] Kill sequence: white flash → expanding ring → debris → smoke
-- [~] `render/fx/shields.ts` — hex shield shell with hit ripple
+- [x] `render/fx/shields.ts` — hex shield shell renders as a wireframe you can see the ship
+      through (the edge test was inverted, filling every cell and hiding the ship). Hit
+      ripple itself still unverified — no player damage occurred in any recorded session.
 - [~] Shield break: shatter-outward shell effect
 - [~] Muzzle flashes per weapon type
 - [~] Damage numbers (pooled, toggleable, crit-coloured)
-- [~] Chromatic-aberration pulse on player damage
-- [~] Screen-edge crimson vignette on low hull
+- [~] Chromatic-aberration pulse on player damage — the pulse now decays over 0.4s instead
+      of latching on forever, but the harness has never actually taken a hit (0 `player:damaged`
+      events across every recorded session), so the visible effect is still unconfirmed
+- [~] Screen-edge crimson vignette on low hull — wired and reset on run start; never observed
+      firing, because hull has stayed at 100/100 in every session so far
 
 ## Phase 3 — The ship
 
@@ -70,6 +79,12 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 - [x] `ship/player.ts` — hull, shields, heat, regeneration, i-frames
 
 ## Phase 4 — Combat
+
+> Open question, seen in every recorded browser session: with the primary held down for the
+> whole soak (heat climbs to 97%, so the weapon *is* firing), HOSTILES stays at 6, SCORE and
+> SALVAGE stay at 0, and `player:damaged` never fires once. Nothing dies and nothing hits
+> back. Projectiles are visible leaving the ship, so the suspect is hit resolution rather
+> than firing. Needs isolating before any Phase 4 box can be ticked.
 
 - [ ] `combat/projectiles.ts` — instanced pooled projectiles (≥2000 concurrent)
 - [ ] Projectile behaviours: linear, homing, piercing, proximity, orbiting, forking
@@ -205,7 +220,12 @@ Legend: `[ ]` todo · `[~]` written but not yet integrated/verified · `[x]` don
 - [ ] `README.md` — what it is, how to run, controls, design notes
 - [ ] Pause on tab blur / window focus loss
 - [ ] Handles WebGL context loss gracefully
-- [ ] Works from a static file server, offline, no external requests
-- [ ] GitHub Pages deploy workflow
+- [x] Works from a static file server, offline, no external requests
+      (`scripts/verify.mjs` serves `dist/` with no egress and asserts 0 external requests)
+- [~] GitHub Pages deploy workflow — builds, typechecks, and selftests green on CI; the
+      deploy step fails at `configure-pages` until Pages is enabled once by hand
+      (Settings → Pages → Source: GitHub Actions). Not verified end-to-end.
 - [ ] Final full-run playtest verification
+      (blocked below: no wave has been cleared in a recorded session, so Drafting,
+      SectorClear, BossIntro, GameOver, and Hangar remain unexercised in-browser)
 - [ ] Committed and pushed to `claude/threejs-space-fighter-game-sxus1u`

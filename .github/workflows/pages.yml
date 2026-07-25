@@ -45,8 +45,11 @@ jobs:
         env:
           GITHUB_PAGES: 'true'
 
-      # enablement creates the Pages site on first run. Without it the job fails with
-      # "Get Pages site failed / Not Found" until someone turns Pages on by hand.
+      # enablement asks the action to create the Pages site if it does not exist yet. Note
+      # GITHUB_TOKEN is usually not allowed to do this ("Resource not accessible by
+      # integration") because creating a Pages site needs repository-admin rights, so the
+      # first time round a human still has to set Settings -> Pages -> Source to
+      # "GitHub Actions". Once the site exists this step just reads its config and passes.
       - uses: actions/configure-pages@v5
         with:
           enablement: true
