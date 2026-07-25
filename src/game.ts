@@ -642,9 +642,20 @@ export class Game {
       this.boundaryWarning = result.atBoundary;
       this.lockTracking = result.lockTracking;
 
-      // Guns fire along the nose, then aim assist bends the shot slightly toward a target.
+      // Guns fire along the nose; the gimbal then traverses the shot onto the locked target's
+      // intercept point when it is inside the mount's envelope, and the assist cone bends it
+      // slightly toward a near-miss otherwise. Both need the *actual* launch speed — the
+      // augment multiplier included — or the lead they solve for is not the lead the shot flies.
       aimDir.copy(FORWARD).applyQuaternion(player.quaternion).normalize();
-      this.targeting.applyAimAssist(aimDir, player.position, this.enemies, this.enemies.liveCount, this.settings);
+      const primarySpeed = getWeapon(player.primary).projectileSpeed * player.stats.projectileSpeedMult;
+      this.targeting.applyAimAssist(
+        aimDir,
+        player.position,
+        this.enemies,
+        this.enemies.liveCount,
+        this.settings,
+        primarySpeed,
+      );
 
       this.combatCtx.playerAlive = true;
       this.weapons.update(

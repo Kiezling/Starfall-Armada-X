@@ -47,6 +47,62 @@ const STAR_LAYERS = [
 
 const TOTAL_STARS = STAR_LAYERS.reduce((sum, l) => sum + l.count, 0);
 
+/**
+ * Drifting dust motes: a small, dim particle field that stays wrapped inside a box centred on
+ * the camera (each mote's world position is fixed; the vertex shader mods it back into range
+ * every frame). Unlike the star layers, motes are close enough that flying past them at speed
+ * visibly streams them by, which is what actually sells velocity — parallax alone on a distant
+ * backdrop reads as "far away", not "fast". Kept to one extra draw call and a low count since
+ * this is dressing, not a feature (DESIGN §3).
+ */
+const MOTE_COUNT = 240;
+/** Half-extent of the wrap box the motes live in, world units. Small enough that the field
+ * around the ship is dense; the mod-wrap makes it read as infinite regardless of travel. */
+const MOTE_HALF_BOX = 130;
+
+const MOTE_VERTEX = /* glsl */ `
+  attribute float aSize;
+  attribute float aBrightness;
+
+  uniform vec3 uCameraPos;
+  uniform float uHalfBox;
+  uniform float uDim;
+
+  varying float vAlpha;
+
+  void main() {
+    // Wrap this mote's fixed world position back into a box centred on the camera. Motes never
+    // move themselves -- the wrap is what makes a static point field read as an infinite one
+    // streaming past, with zero per-mote CPU work and zero attribute re-uploads.
+    float boxSize = uHalfBox * 2.0;
+    vec3 rel = mod(position - uCameraPos + uHalfBox, boxSize) - uHalfBox;
+    vec3 worldPos = uCameraPos + rel;
+
+    vec4 mv = modelViewMatrix * vec4(worldPos, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    // Fade near the box edge (where a mote would otherwise pop as it wraps) and very close to
+    // the camera (where it would otherwise flash past as a huge blob).
+    float edgeFade = smoothstep(uHalfBox, uHalfBox * 0.55, length(rel));
+    float nearFade = smoothstep(0.6, 4.0, dist);
+    vAlpha = aBrightness * edgeFade * nearFade * uDim;
+
+    gl_PointSize = aSize * (140.0 / dist);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const MOTE_FRAGMENT = /* glsl */ `
+  varying float vAlpha;
+  void main() {
+    vec2 uv = gl_PointCoord - 0.5;
+    float d = length(uv);
+    if (d > 0.5) discard;
+    float core = smoothstep(0.5, 0.0, d);
+    gl_FragColor = vec4(vec3(0.82, 0.87, 0.95), core * vAlpha);
+  }
+`;
+
 /* GLSL --------------------------------------------------------------------------------------- */
 
 // Hash-based 3D value noise + fbm. Deliberately cheap (no gradient noise, no permutation
@@ -298,6 +354,10 @@ export class Starfield {
   private readonly starGeometry: THREE.BufferGeometry;
   private readonly starMaterial: THREE.ShaderMaterial;
 
+  private readonly motePoints: THREE.Points;
+  private readonly moteGeometry: THREE.BufferGeometry;
+  private readonly moteMaterial: THREE.ShaderMaterial;
+
   private currentSector = 0;
   private fadeElapsed = FADE_DURATION;
 
@@ -389,6 +449,40 @@ export class Starfield {
     this.starPoints.frustumCulled = false;
     this.starPoints.renderOrder = -1;
     scene.add(this.starPoints);
+
+    /* Dust motes ------------------------------------------------------------------------------ */
+    this.moteGeometry = new THREE.BufferGeometry();
+    const motePos = new Float32Array(MOTE_COUNT * 3);
+    const moteSize = new Float32Array(MOTE_COUNT);
+    const moteBrightness = new Float32Array(MOTE_COUNT);
+    for (let i = 0; i < MOTE_COUNT; i++) {
+      motePos[i * 3] = rng.signed(1) * MOTE_HALF_BOX;
+      motePos[i * 3 + 1] = rng.signed(1) * MOTE_HALF_BOX;
+      motePos[i * 3 + 2] = rng.signed(1) * MOTE_HALF_BOX;
+      moteSize[i] = rng.range(0.5, 1.4);
+      moteBrightness[i] = rng.range(0.15, 0.5);
+    }
+    this.moteGeometry.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+    this.moteGeometry.setAttribute('aSize', new THREE.BufferAttribute(moteSize, 1));
+    this.moteGeometry.setAttribute('aBrightness', new THREE.BufferAttribute(moteBrightness, 1));
+    this.moteGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+
+    this.moteMaterial = new THREE.ShaderMaterial({
+      vertexShader: MOTE_VERTEX,
+      fragmentShader: MOTE_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uCameraPos: { value: new THREE.Vector3() },
+        uHalfBox: { value: MOTE_HALF_BOX },
+        uDim: { value: 1 },
+      },
+    });
+    this.motePoints = new THREE.Points(this.moteGeometry, this.moteMaterial);
+    this.motePoints.frustumCulled = false;
+    this.motePoints.renderOrder = -1;
+    scene.add(this.motePoints);
   }
 
   update(cameraPos: THREE.Vector3, elapsed: number, rawDt: number): void {
@@ -411,6 +505,10 @@ export class Starfield {
     (starU.uCameraPos.value as THREE.Vector3).copy(cameraPos);
     starU.uTime.value = elapsed;
     starU.uDim.value = this.dimCurrent;
+
+    const moteU = this.moteMaterial.uniforms;
+    (moteU.uCameraPos.value as THREE.Vector3).copy(cameraPos);
+    moteU.uDim.value = this.dimCurrent;
   }
 
   setSector(sector: number): void {
@@ -448,5 +546,9 @@ export class Starfield {
     this.scene.remove(this.starPoints);
     this.starGeometry.dispose();
     this.starMaterial.dispose();
+
+    this.scene.remove(this.motePoints);
+    this.moteGeometry.dispose();
+    this.moteMaterial.dispose();
   }
 }

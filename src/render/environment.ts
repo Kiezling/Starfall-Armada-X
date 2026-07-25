@@ -76,6 +76,18 @@ export function getEnvironmentMap(renderer: THREE.WebGLRenderer): THREE.Texture 
   rim.lookAt(0, 0, 0);
   source.add(rim);
 
+  // A second, dimmer rim from behind-right in a neutral cool white. One-sided rim lighting reads
+  // fine while a ship banks toward the accent-coloured side, but leaves the opposite flank with
+  // no separating edge at all once it rolls away; this closes that gap without competing with
+  // the primary (coloured, brighter) rim for attention.
+  const rimOpposite = new THREE.Mesh(
+    new THREE.PlaneGeometry(24, 13),
+    new THREE.MeshBasicMaterial({ color: 0xbfd4e6 }),
+  );
+  rimOpposite.position.set(20, 4, -20);
+  rimOpposite.lookAt(0, 0, 0);
+  source.add(rimOpposite);
+
   // A dim warm bounce from below keeps undersides from going pure black.
   const bounce = new THREE.Mesh(
     new THREE.PlaneGeometry(40, 40),
@@ -94,7 +106,7 @@ export function getEnvironmentMap(renderer: THREE.WebGLRenderer): THREE.Texture 
   pmrem.dispose();
   shellGeo.dispose();
   (shell.material as THREE.Material).dispose();
-  for (const mesh of [key, rim, bounce]) {
+  for (const mesh of [key, rim, rimOpposite, bounce]) {
     mesh.geometry.dispose();
     (mesh.material as THREE.Material).dispose();
   }
@@ -107,7 +119,9 @@ export function applyEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRender
   scene.environment = getEnvironmentMap(renderer);
   // Below ~0.6 the hulls go muddy; above ~1.2 they wash out and stop reading as dark military
   // hardware. This sits where panel lines still catch light but the ship stays a silhouette.
-  scene.environmentIntensity = 0.85;
+  // Nudged up slightly from 0.85 alongside the second rim light so the extra edge definition
+  // actually registers instead of getting lost in the same overall exposure.
+  scene.environmentIntensity = 0.92;
 }
 
 export function disposeEnvironment(): void {

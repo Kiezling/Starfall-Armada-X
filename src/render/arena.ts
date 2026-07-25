@@ -14,7 +14,7 @@
 import * as THREE from 'three';
 import { ARENA } from '../core/constants';
 import { Rng } from '../core/rng';
-import { palette, color } from './palette';
+import { palette, color, depthFogColor, DEPTH_FOG_DENSITY } from './palette';
 import { SUN_COLOR, SUN_DIRECTION } from './starfield';
 import {
   clamp01,
@@ -179,6 +179,7 @@ const ASTEROID_VERTEX = /* glsl */ `
   varying vec3 vWorldPos;
   varying vec3 vObjPos;
   varying float vShade;
+  varying float vViewDist;
 
   ${NOISE_GLSL}
 
@@ -215,7 +216,9 @@ const ASTEROID_VERTEX = /* glsl */ `
     vWorldPos = worldPos.xyz;
     vObjPos = displaced;
     vShade = s;
-    gl_Position = projectionMatrix * modelViewMatrix * worldPos;
+    vec4 mv = modelViewMatrix * worldPos;
+    vViewDist = length(mv.xyz);
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
@@ -224,10 +227,13 @@ const ASTEROID_FRAGMENT = /* glsl */ `
   varying vec3 vWorldPos;
   varying vec3 vObjPos;
   varying float vShade;
+  varying float vViewDist;
   uniform vec3 uColor;
   uniform vec3 uLightDir;
   uniform vec3 uSunColor;
   uniform vec3 uFillColor;
+  uniform vec3 uFogColor;
+  uniform float uFogDensity;
 
   ${NOISE_GLSL}
 
@@ -264,6 +270,14 @@ const ASTEROID_FRAGMENT = /* glsl */ `
     vec3 h = normalize(uLightDir + viewDir);
     float spec = pow(max(dot(n, h), 0.0), 26.0) * ndotl * (0.25 + grain * 0.4);
     lit += uSunColor * spec * 0.5;
+
+    // Depth cueing: this shader is a custom ShaderMaterial, so it does not pick up three.js's
+    // automatic scene.fog application the way the ship hulls (MeshStandardMaterial) do. Blending
+    // toward the same shared fog colour/density (palette.ts's depthFogColor/DEPTH_FOG_DENSITY)
+    // keeps distant asteroids receding in step with everything else instead of staying crisp
+    // while the rest of the arena fades.
+    float fogFactor = clamp(exp(-pow(uFogDensity * vViewDist, 2.0)), 0.0, 1.0);
+    lit = mix(uFogColor, lit, fogFactor);
 
     gl_FragColor = vec4(lit, 1.0);
   }
@@ -408,6 +422,8 @@ export class Arena {
         uLightDir: { value: SUN_DIRECTION.clone() },
         uSunColor: { value: new THREE.Color(SUN_COLOR) },
         uFillColor: { value: color(palette().arenaBoundary).clone() },
+        uFogColor: { value: depthFogColor().clone() },
+        uFogDensity: { value: DEPTH_FOG_DENSITY },
       },
     });
     this.asteroidMesh = new THREE.InstancedMesh(this.asteroidGeometry, this.asteroidMaterial, ASTEROID_COUNT);
@@ -514,6 +530,7 @@ export class Arena {
 
     if (this.currentSector === 0) {
       this.asteroidMaterial.uniforms.uTime.value = elapsed;
+      (this.asteroidMaterial.uniforms.uFogColor.value as THREE.Color).copy(depthFogColor());
     } else if (this.currentSector === 1) {
       for (const front of this.empFronts) {
         front.radius += EMP_SPEED * dt;

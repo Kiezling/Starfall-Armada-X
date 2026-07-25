@@ -63,6 +63,7 @@ export class TrailSystem {
   private readonly positions: Float32Array;
   private readonly colors: Float32Array;
   private readonly params: Float32Array; // x: taper 0..1, y: width, z: intensity
+  private readonly sides: Float32Array; // -1 (left) / +1 (right), fixed at construction
   private readonly indices: Uint32Array;
 
   private readonly positionAttr: THREE.BufferAttribute;
@@ -93,6 +94,11 @@ export class TrailSystem {
     this.positions = new Float32Array(totalVerts * 3);
     this.colors = new Float32Array(totalVerts * 3);
     this.params = new Float32Array(totalVerts * 3);
+    // Fixed for the lifetime of the buffer: `update()` always writes the left expansion to the
+    // even vertex of each pair and the right to the odd one (see the dstV writes below), so this
+    // never needs to be touched again after construction.
+    this.sides = new Float32Array(totalVerts);
+    for (let i = 0; i < totalVerts; i++) this.sides[i] = i % 2 === 0 ? -1 : 1;
 
     // Two triangles per segment, POINTS_PER_TRAIL - 1 segments per trail, laid out once and
     // never touched again — only the vertex data changes frame to frame.
@@ -123,6 +129,7 @@ export class TrailSystem {
     this.geometry.setAttribute('position', this.positionAttr);
     this.geometry.setAttribute('aColor', this.colorAttr);
     this.geometry.setAttribute('aParams', this.paramsAttr);
+    this.geometry.setAttribute('aSide', new THREE.BufferAttribute(this.sides, 1));
     this.geometry.setIndex(new THREE.BufferAttribute(this.indices, 1));
     this.geometry.setDrawRange(0, 0);
 
@@ -136,13 +143,16 @@ export class TrailSystem {
       vertexShader: /* glsl */ `
         attribute vec3 aColor;
         attribute vec3 aParams; // taper, width, intensity
+        attribute float aSide;
         varying vec3 vColor;
         varying float vTaper;
         varying float vIntensity;
+        varying float vSide;
         void main() {
           vColor = aColor;
           vTaper = aParams.x;
           vIntensity = aParams.z;
+          vSide = aSide;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -150,12 +160,22 @@ export class TrailSystem {
         varying vec3 vColor;
         varying float vTaper;
         varying float vIntensity;
+        varying float vSide;
         void main() {
           // Width is already baked into the geometry on the CPU; taper alpha too so the ribbon
           // dissolves at the tail instead of ending in a hard-edged sliver.
           float alpha = vTaper * vTaper * clamp(vIntensity, 0.0, 4.0);
           if (alpha <= 0.001) discard;
-          gl_FragColor = vec4(vColor * (0.6 + 0.6 * vIntensity), alpha);
+
+          // A hot white-hot core streak down the ribbon's centreline, only at high intensity
+          // (boost / near-max throttle -- see the intensity the caller pushes in) so a cruising
+          // engine trail stays a flat colour and only a boosting one earns the brighter spine.
+          // This is what makes throttle/boost read as a change in the trail, not just its length.
+          float centre = 1.0 - abs(vSide);
+          float hotCore = smoothstep(0.35, 1.0, centre) * smoothstep(0.55, 1.0, vIntensity);
+          vec3 col = mix(vColor, vec3(1.0), hotCore * 0.65);
+
+          gl_FragColor = vec4(col * (0.6 + 0.6 * vIntensity), alpha);
         }
       `,
     });

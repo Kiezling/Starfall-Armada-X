@@ -217,11 +217,16 @@ export class TargetingSystem {
    *
    * Gimbal: When a locked target's intercept point falls within the gimbal range (15° half-angle,
    * soft edge from 12°), the guns physically traverse to lock on, snapping the shot direction to
-   * the intercept. This applies only to the locked target when assist is enabled.
+   * the intercept (or current position for hitscan). This applies only to the locked target when
+   * assist is enabled.
    *
    * Assist: Bends `aimDir` toward the nearest non-locked target inside the assist cone. The bend
    * is capped at the setting's maximum angle and scaled by proximity, so it feels like settling
    * rather than dragging. Never exceeds the cap.
+   *
+   * @param projectileSpeed Weapon's projectile speed × projectileSpeedMult (see src/game.ts:596).
+   *                        For hitscan (≤0), gimbal aims at target's current position.
+   *                        For ballistic (>0), gimbal calculates intercept at this speed.
    */
   applyAimAssist(
     aimDir: THREE.Vector3,
@@ -229,6 +234,7 @@ export class TargetingSystem {
     enemies: EnemyQuery,
     _enemyCount: number,
     settings: Settings,
+    projectileSpeed: number,
   ): void {
     const maxBend = AIM_ASSIST_RADIANS[settings.aimAssist] ?? 0;
 
@@ -237,43 +243,56 @@ export class TargetingSystem {
     if (maxBend > 0 && this.locked >= 0) {
       const target = enemies.getById(this.locked);
       if (target && target.active) {
-        // Get the lead point for the locked target.
-        if (this.getLeadPoint(scratchVec3D, 420, enemies)) { // Use a typical projectile speed
-          // Direction from ship to lead point.
-          scratchVec3E.copy(scratchVec3D).sub(origin);
-          const leadDist = scratchVec3E.length();
-          if (leadDist > 1e-3) {
-            scratchVec3E.multiplyScalar(1 / leadDist);
+        // For hitscan (speed ≤ 0), aim at current position. For ballistic (speed > 0),
+        // calculate intercept using the actual projectile speed.
+        let gimbalTargetPos: THREE.Vector3;
+        if (projectileSpeed > 0) {
+          // Ballistic: calculate where to aim to hit the target.
+          if (!this.getLeadPoint(scratchVec3D, projectileSpeed, enemies)) {
+            // No intercept solution; aim at current position as fallback.
+            gimbalTargetPos = target.position;
+          } else {
+            gimbalTargetPos = scratchVec3D;
+          }
+        } else {
+          // Hitscan: aim straight at the target's current position.
+          gimbalTargetPos = target.position;
+        }
 
-            // Check if lead point is within gimbal range.
-            const angle = Math.acos(Math.max(-1, Math.min(1, aimDir.dot(scratchVec3E))));
+        // Direction from ship to gimbal target (lead point or current position).
+        scratchVec3E.copy(gimbalTargetPos).sub(origin);
+        const leadDist = scratchVec3E.length();
+        if (leadDist > 1e-3) {
+          scratchVec3E.multiplyScalar(1 / leadDist);
 
-            // Soft edge: full traverse inside 12°, linear falloff to zero at 15°.
-            if (angle <= WEAPONS.gimbalHalfAngle) {
-              let traverse = 1.0;
-              if (angle > WEAPONS.gimbalSoftStart) {
-                // Linear interpolation from 1.0 at 12° to 0.0 at 15°.
-                traverse = 1.0 - (angle - WEAPONS.gimbalSoftStart) / (WEAPONS.gimbalHalfAngle - WEAPONS.gimbalSoftStart);
-              }
+          // Check if gimbal target is within gimbal range.
+          const angle = Math.acos(Math.max(-1, Math.min(1, aimDir.dot(scratchVec3E))));
 
-              if (traverse > 1e-4) {
-                // Traverse toward the lead direction: at full strength, snap all the way;
-                // at reduced strength, lerp partway.
-                if (angle < 1e-5) {
-                  // Already aligned, just use the lead direction.
-                  aimDir.copy(scratchVec3E);
-                } else {
-                  // Rotate proportionally toward the lead direction.
-                  gimbalAxis.copy(aimDir).cross(scratchVec3E);
-                  if (gimbalAxis.lengthSq() > 1e-8) {
-                    gimbalAxis.normalize();
-                    gimbalQuat.setFromAxisAngle(gimbalAxis, angle * traverse);
-                    aimDir.applyQuaternion(gimbalQuat).normalize();
-                  }
+          // Soft edge: full traverse inside 12°, linear falloff to zero at 15°.
+          if (angle <= WEAPONS.gimbalHalfAngle) {
+            let traverse = 1.0;
+            if (angle > WEAPONS.gimbalSoftStart) {
+              // Linear interpolation from 1.0 at 12° to 0.0 at 15°.
+              traverse = 1.0 - (angle - WEAPONS.gimbalSoftStart) / (WEAPONS.gimbalHalfAngle - WEAPONS.gimbalSoftStart);
+            }
+
+            if (traverse > 1e-4) {
+              // Traverse toward the gimbal direction: at full strength, snap all the way;
+              // at reduced strength, lerp partway.
+              if (angle < 1e-5) {
+                // Already aligned, just use the gimbal direction.
+                aimDir.copy(scratchVec3E);
+              } else {
+                // Rotate proportionally toward the gimbal direction.
+                gimbalAxis.copy(aimDir).cross(scratchVec3E);
+                if (gimbalAxis.lengthSq() > 1e-8) {
+                  gimbalAxis.normalize();
+                  gimbalQuat.setFromAxisAngle(gimbalAxis, angle * traverse);
+                  aimDir.applyQuaternion(gimbalQuat).normalize();
                 }
               }
-              return; // Gimbal overrides regular assist.
             }
+            return; // Gimbal overrides regular assist.
           }
         }
       }

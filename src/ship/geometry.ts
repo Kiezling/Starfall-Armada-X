@@ -507,6 +507,7 @@ const PLUME_VERTEX = /* glsl */ `
 const PLUME_FRAGMENT = /* glsl */ `
   uniform vec3 uColor;
   uniform vec3 uCore;
+  uniform vec3 uIdleColor;
   uniform float uThrottle;
   uniform float uTime;
   varying float vAxial;
@@ -526,10 +527,17 @@ const PLUME_FRAGMENT = /* glsl */ `
     // Combustion flicker: two detuned sines, so it never reads as a loop.
     float flicker = 0.88 + 0.12 * sin(uTime * 41.0) * sin(uTime * 27.0 + 1.7);
 
+    // Colour temperature rises with throttle: a cold ember at idle, the livery colour in normal
+    // flight, and past ~80% throttle (which reads as boost, since that is where the flight model
+    // pushes speed fraction) the core itself pushes past the livery hue toward a hotter
+    // blue-white -- the same cue a real afterburner gives.
+    vec3 baseColor = mix(uIdleColor, uColor, smoothstep(0.05, 0.55, uThrottle));
+    vec3 hotCore = mix(uCore, vec3(0.78, 0.88, 1.0), smoothstep(0.78, 1.0, uThrottle));
+
     // Hot core down the axis, cooling outward and along the length.
     float axialFalloff = pow(1.0 - along, 1.7);
     float core = pow(1.0 - along, 5.0);
-    vec3 col = mix(uColor, uCore, clamp(core * 1.4, 0.0, 1.0));
+    vec3 col = mix(baseColor, hotCore, clamp(core * 1.4, 0.0, 1.0));
 
     float intensity = axialFalloff * diamonds * flicker * (0.45 + uThrottle * 1.25);
     gl_FragColor = vec4(col * (1.0 + core * 2.2), clamp(intensity, 0.0, 1.0));
@@ -713,6 +721,10 @@ class ShipVisualImpl implements ShipVisual {
         // White-hot at the throat regardless of livery: a flame's core is temperature, not
         // team colour, and keeping it white is what sells the heat.
         uCore: { value: new THREE.Color(0xffffff) },
+        // A dim, cooling ember tone for idle/low throttle, shared across every livery: at idle
+        // the plume is barely alight, so it should read as embers, not a dimmer version of the
+        // team colour.
+        uIdleColor: { value: new THREE.Color(0x8a2f14) },
         uThrottle: { value: 0 },
         uTime: { value: 0 },
         uDepth: { value: 1 },

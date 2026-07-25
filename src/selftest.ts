@@ -676,11 +676,10 @@ function testLeadTargetPrediction(): void {
 
 /**
  * Gimbal assist should snap locked targets' aim to the lead point when within range, and
- * apply soft-edge falloff outside the primary range.
+ * apply soft-edge falloff outside the primary range. Different projectile speeds should
+ * produce different lead points.
  */
 function testGimbalAssist(): void {
-  const targeting = new TargetingSystem();
-
   const player = createPlayerState({
     hullId: 'starfall',
     primary: 'pulseRepeater',
@@ -690,7 +689,7 @@ function testGimbalAssist(): void {
   player.position.set(0, 0, 0);
   player.velocity.set(0, 0, 0);
 
-  // Test case 1: target 10° off boresight (within gimbal range).
+  // Test case 1: gimbal at 10° engages and aligns with ballistic lead point.
   const angle10 = 10 * (Math.PI / 180);
   const enemyPos10 = new THREE.Vector3(
     100 * Math.sin(angle10),
@@ -707,24 +706,26 @@ function testGimbalAssist(): void {
   } as any;
 
   const settings = { aimAssist: 2 } as any; // AimAssist.Strong = 2
-  targeting.update(player, mockEnemyQuery10, 0, null as any, settings, 0);
-  (targeting as any).locked = 0;
+  const targeting10 = new TargetingSystem();
+  targeting10.update(player, mockEnemyQuery10, 0, null as any, settings, 0);
+  (targeting10 as any).locked = 0;
 
   const aimDir10 = new THREE.Vector3(0, 0, -1); // Facing forward.
-  targeting.applyAimAssist(aimDir10, player.position, mockEnemyQuery10, 0, settings);
+  const projectileSpeed300 = 300;
+  targeting10.applyAimAssist(aimDir10, player.position, mockEnemyQuery10, 0, settings, projectileSpeed300);
 
   const leadPoint10 = new THREE.Vector3();
-  targeting.getLeadPoint(leadPoint10, 300, mockEnemyQuery10);
+  targeting10.getLeadPoint(leadPoint10, projectileSpeed300, mockEnemyQuery10);
   const expectedDir10 = leadPoint10.clone().sub(player.position).normalize();
   const alignment10 = aimDir10.dot(expectedDir10);
 
   check(
-    'gimbal at 10° aligns with lead point',
+    'gimbal at 10° aligns with ballistic lead point',
     alignment10 > 0.93,
     `alignment=${alignment10.toFixed(3)} (should be close to 1.0)`,
   );
 
-  // Test case 2: target 25° off boresight (outside gimbal range, should be untouched).
+  // Test case 2: gimbal with AimAssist.Off is completely disabled.
   const angle25 = 25 * (Math.PI / 180);
   const enemyPos25 = new THREE.Vector3(
     100 * Math.sin(angle25),
@@ -740,19 +741,63 @@ function testGimbalAssist(): void {
     getById: (id: number) => (id === 0 ? mockEnemy25 : null),
   } as any;
 
-  const targeting25 = new TargetingSystem();
-  targeting25.update(player, mockEnemyQuery25, 0, null as any, settings, 0);
-  (targeting25 as any).locked = 0;
+  const settingsOff = { aimAssist: 0 } as any; // AimAssist.Off
+  const targeting25Off = new TargetingSystem();
+  targeting25Off.update(player, mockEnemyQuery25, 0, null as any, settingsOff, 0);
+  (targeting25Off as any).locked = 0;
 
-  const aimDir25 = new THREE.Vector3(0, 0, -1);
-  const aimDirBefore = aimDir25.clone();
-  targeting25.applyAimAssist(aimDir25, player.position, mockEnemyQuery25, 0, settings);
+  const aimDir25Off = new THREE.Vector3(0, 0, -1);
+  const aimDirBefore25Off = aimDir25Off.clone();
+  targeting25Off.applyAimAssist(aimDir25Off, player.position, mockEnemyQuery25, 0, settingsOff, projectileSpeed300);
 
-  const unchanged = Math.abs(aimDir25.dot(aimDirBefore) - 1.0) < 0.02;
+  const unchanged25Off = Math.abs(aimDir25Off.dot(aimDirBefore25Off) - 1.0) < 1e-6;
   check(
-    'gimbal at 25° leaves aim direction unchanged',
-    unchanged,
-    `dot product ${aimDir25.dot(aimDirBefore).toFixed(3)} (should be ~1.0)`,
+    'gimbal with AimAssist.Off is completely disabled',
+    unchanged25Off,
+    `dot product ${aimDir25Off.dot(aimDirBefore25Off).toFixed(6)} (should be exactly 1.0)`,
+  );
+
+  // Test case 3: gimbal with hitscan (speed <= 0) aims at current position, not intercepted.
+  const targetingHitscan = new TargetingSystem();
+  targetingHitscan.update(player, mockEnemyQuery10, 0, null as any, settings, 0);
+  (targetingHitscan as any).locked = 0;
+
+  const aimDirHitscan = new THREE.Vector3(0, 0, -1);
+  const hitscanSpeed = 0; // Hitscan weapon
+  targetingHitscan.applyAimAssist(aimDirHitscan, player.position, mockEnemyQuery10, 0, settings, hitscanSpeed);
+
+  // For hitscan, gimbal should aim at target's current position, not an intercept point.
+  const targetDir = enemyPos10.clone().sub(player.position).normalize();
+  const hitscanAlignment = aimDirHitscan.dot(targetDir);
+
+  check(
+    'gimbal with hitscan (speed=0) aims at current position',
+    hitscanAlignment > 0.93,
+    `alignment with current pos=${hitscanAlignment.toFixed(3)} (should be close to 1.0)`,
+  );
+
+  // Test case 4: different projectile speeds produce different lead points.
+  // Slower projectiles lead further ahead.
+  const slowSpeed = 150;
+  const fastSpeed = 600;
+
+  const leadPointSlow = new THREE.Vector3();
+  const leadPointFast = new THREE.Vector3();
+  const targetingLead = new TargetingSystem();
+  targetingLead.update(player, mockEnemyQuery10, 0, null as any, settings, 0);
+  (targetingLead as any).locked = 0;
+
+  targetingLead.getLeadPoint(leadPointSlow, slowSpeed, mockEnemyQuery10);
+  targetingLead.getLeadPoint(leadPointFast, fastSpeed, mockEnemyQuery10);
+
+  const distanceFromTarget = (point: THREE.Vector3) => point.clone().sub(enemyPos10).length();
+  const leadDistSlow = distanceFromTarget(leadPointSlow);
+  const leadDistFast = distanceFromTarget(leadPointFast);
+
+  check(
+    'slower projectiles lead further ahead than faster ones',
+    leadDistSlow > leadDistFast,
+    `slow: ${leadDistSlow.toFixed(2)}, fast: ${leadDistFast.toFixed(2)} (slow should be larger)`,
   );
 }
 
