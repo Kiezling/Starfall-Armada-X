@@ -114,8 +114,8 @@ export class RenderSystem {
   private badTimer = 0;
   private goodTimer = 0;
 
-  private pixelRatioCap = RENDER.maxPixelRatio;
-  private bloomScale = RENDER.bloomResolutionScale;
+  private pixelRatioCap: number = RENDER.maxPixelRatio;
+  private bloomScale: number = RENDER.bloomResolutionScale;
   private bloomStrengthTier: number = RENDER.bloomStrength;
   private reduceFlash = false;
 
