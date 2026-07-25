@@ -231,11 +231,46 @@ function buildTaperedSlab(span: number, rootDepth: number, thickness: number, ti
   return geo;
 }
 
-/** Merges pre-transformed, pre-painted parts into a single indexed geometry and centres it
- * on the origin's bounding sphere so instance scale/rotation behaves predictably. */
+/** Merges pre-transformed, pre-painted parts into a single geometry and centres it on the
+ * origin's bounding sphere so instance scale/rotation behaves predictably.
+ *
+ * Normalising indexing before the merge is load-bearing, not defensive: three's primitives are
+ * not uniform about it. ConeGeometry/BoxGeometry/CylinderGeometry are indexed, but anything
+ * built on PolyhedronGeometry (IcosahedronGeometry here) is NOT. mergeGeometries requires all
+ * inputs to be uniformly indexed or uniformly non-indexed and returns null otherwise, so
+ * mixing them — as every archetype builder below does — silently fails without this. */
 function mergeParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
-  const merged = mergeGeometries(parts, false);
-  if (!merged) throw new Error('enemies/types: geometry merge failed');
+  if (parts.length === 0) throw new Error('enemies/types: mergeParts got zero geometries');
+
+  const normalized = parts.map((g) => (g.index ? g.toNonIndexed() : g));
+
+  const reference = Object.keys(normalized[0]!.attributes).sort();
+  for (let i = 1; i < normalized.length; i++) {
+    const attrs = Object.keys(normalized[i]!.attributes).sort();
+    const matches = attrs.length === reference.length && attrs.every((a, idx) => a === reference[idx]);
+    if (!matches) {
+      throw new Error(
+        `enemies/types: mergeParts attribute mismatch at index ${i}: ` +
+          `[${attrs.join(',')}] vs [${reference.join(',')}].`,
+      );
+    }
+  }
+
+  const merged = mergeGeometries(normalized as THREE.BufferGeometry[], false);
+
+  // toNonIndexed() allocates a new geometry when it converts one; those copies exist only for
+  // the merge. Inputs already non-indexed come back by reference and are the caller's.
+  for (let i = 0; i < parts.length; i++) {
+    if (normalized[i] !== parts[i]) normalized[i]!.dispose();
+  }
+
+  if (!merged) {
+    throw new Error(
+      'enemies/types: mergeGeometries returned null — see the preceding ' +
+        'THREE.BufferGeometryUtils console.error for which input broke uniformity.',
+    );
+  }
+
   merged.computeBoundingSphere();
   merged.computeBoundingBox();
   return merged;
