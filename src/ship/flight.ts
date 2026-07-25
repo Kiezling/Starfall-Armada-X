@@ -60,6 +60,9 @@ const projectedUp = /*#__PURE__*/ new THREE.Vector3();
 const rollCross = /*#__PURE__*/ new THREE.Vector3();
 const bankQuat = /*#__PURE__*/ new THREE.Quaternion();
 const targetQuat = /*#__PURE__*/ new THREE.Quaternion();
+const trackLookMatrix = /*#__PURE__*/ new THREE.Matrix4();
+/** Fixed at the origin — `Matrix4.lookAt` takes eye/target as points, not a direction. */
+const trackEye = /*#__PURE__*/ new THREE.Vector3(0, 0, 0);
 
 /**
  * Seconds after the last meaningful pitch input during which auto-level stays suppressed.
@@ -283,16 +286,13 @@ export class FlightModel {
     if (!trackDir || strength <= 0 || input.steering) return 0;
 
     // Look-rotation toward the target, preserving world-up as the roll reference so tracking
-    // does not itself introduce any bank.
-    lookRotation(targetQuat, trackDir, WORLD_UP);
+    // does not itself introduce any bank. Built straight off THREE.Matrix4.lookAt rather than
+    // composed by hand, so it is guaranteed a proper (determinant +1) rotation.
+    trackLookMatrix.lookAt(trackEye, trackDir, WORLD_UP);
+    targetQuat.setFromRotationMatrix(trackLookMatrix);
 
     const error = this.orientation.angleTo(targetQuat);
     if (error < 1e-4) return 0;
-    if ((globalThis as any).__dbgCount === undefined) (globalThis as any).__dbgCount = 0;
-    if ((globalThis as any).__dbgCount < 8) {
-      (globalThis as any).__dbgCount++;
-      console.error('DBG error', error, 'turnRate', turnRate, 'strength', strength);
-    }
 
     // Proportional convergence with a ceiling. trackConvergence is a 1/seconds gain, so the
     // nose closes most of a small error inside a few frames while a large one is still capped.
@@ -302,11 +302,6 @@ export class FlightModel {
 
     this.orientation.rotateTowards(targetQuat, maxStepAngle);
     this.orientation.normalize();
-    if ((globalThis as any).__dbgCount2 === undefined) (globalThis as any).__dbgCount2 = 0;
-    if ((globalThis as any).__dbgCount2 < 8) {
-      (globalThis as any).__dbgCount2++;
-      console.error('DBG2 maxRate', maxRate, 'rate', rate, 'dt', dt, 'maxStepAngle', maxStepAngle, 'postErr', this.orientation.angleTo(targetQuat));
-    }
 
     // Report saturation, not raw error: a bar that pegs at 1 whenever the target is far away
     // tells the player nothing. This reads "the assist is at its limit", which is the cue to
