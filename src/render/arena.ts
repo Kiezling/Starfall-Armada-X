@@ -541,7 +541,14 @@ export class Arena {
         // Fade in from the centre and fade out as the wave washes past the boundary.
         const growIn = clamp01(front.radius / (EMP_THICKNESS * 2));
         const shrinkOut = clamp01((front.maxRadius + EMP_THICKNESS - front.radius) / (EMP_THICKNESS * 2));
-        front.material.uniforms.uAlpha.value = Math.min(growIn, shrinkOut) * 0.9;
+        // Once the wavefront's radius passes the player, the shell fully encloses the camera:
+        // every visible point reads edge-on, and the rim-lit shader washes the whole screen
+        // additively instead of reading as a wave. Fading it out as the enclosure deepens keeps
+        // the sweep readable (brightest right as it crosses you) instead of blinding — worst
+        // near the arena centre, where the shell stays wrapped around the player for most of
+        // its sweep rather than passing through quickly.
+        const enclosure = clamp01((front.radius - playerDist) / EMP_THICKNESS);
+        front.material.uniforms.uAlpha.value = Math.min(growIn, shrinkOut) * (1 - enclosure) * 0.9;
         front.material.uniforms.uTime.value = elapsed;
       }
     } else if (this.currentSector === 2) {
