@@ -485,6 +485,28 @@ export interface Settings {
 
   invertY: boolean;
   mouseSensitivity: number;
+
+  /*
+   * Rollover relief.
+   *
+   * Most non-gaming keyboards are matrix-scanned with limited N-key rollover: past three or
+   * four simultaneous keys, further presses are silently dropped, and the arrow cluster is a
+   * frequent casualty. Nothing in software can make the hardware report a key it never sent,
+   * so the only real fix is to need fewer keys held at once. Each of these converts a
+   * continuously-held key into a latched state.
+   */
+
+  /** Fire is a toggle rather than a hold — frees the trigger finger's key entirely. */
+  toggleFire: boolean;
+  /** Boost is a toggle rather than a hold. */
+  toggleBoost: boolean;
+  /**
+   * Throttle becomes a persistent setpoint that W/S ramp and then hold, instead of a key that
+   * must stay down to keep moving. This is the flight-sim convention (a throttle notch) and it
+   * removes the one key that would otherwise be held for the entire run.
+   */
+  cruiseThrottle: boolean;
+
   /** Action name -> KeyboardEvent.code. */
   keybinds: Record<string, string>;
 
