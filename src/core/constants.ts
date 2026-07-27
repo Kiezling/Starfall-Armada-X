@@ -61,10 +61,31 @@ export const PLAYER = {
   maxBankAngle: 0.75,
 
   boostMultiplier: 1.85,
-  boostDrain: 34,
   boostRegen: 18,
   boostMax: 100,
-  /** Boost must reach this much before it can be re-engaged after emptying. */
+
+  /*
+   * Boost is a *blink*: tapped, not held.
+   *
+   * It used to be a held drain, which made it the fourth key a player had to keep down while
+   * already holding throttle, strafe and fire — and on a keyboard with limited N-key rollover
+   * that is exactly the press that gets dropped. Tapping also reads better against what boost
+   * is actually for: a committed repositioning burst to break a lock or close a gap, rather
+   * than a speed slider held down whenever the meter allows.
+   */
+
+  /** Charge spent per blink. At boostMax 100 that is three blinks from a full meter. */
+  blinkCost: 32,
+  /**
+   * Seconds of `boostMultiplier` speed a blink grants. At 1.85x on a 115-unit base speed this
+   * covers roughly 96 units of travel — far enough to cross out of a dogfight's knife range in
+   * one press, short enough that it cannot be chained into permanent flight.
+   */
+  blinkDuration: 0.45,
+  /**
+   * Charge must reach this before another blink can start, so a nearly-empty meter cannot be
+   * feathered into a stutter of useless micro-blinks. Equal to `blinkCost` plus a small margin.
+   */
   boostRearmThreshold: 20,
 
   driftDuration: 1.5,
@@ -77,11 +98,37 @@ export const PLAYER = {
   /** Seconds out of combat before shields start recharging. */
   shieldDelay: 3.5,
 
-  heatMax: 100,
-  /** Heat shed per second when not firing. */
+  /**
+   * Heat model arithmetic, derived from the base loadout (Pulse Repeater — "the baseline
+   * every other weapon is measured against", see weapons.ts's DPS audit header):
+   *
+   *   Pulse Repeater generates heatPerShot / fireInterval = 5 / 0.11 = 45.45 heat/s while the
+   *   trigger is held. Cooling (heatCooling, below) runs concurrently with firing — it is not
+   *   gated on "not shooting" — so the real climb rate is 45.45 - heatCooling. At
+   *   heatCooling = 26/s that is a net 19.45 heat/s, so a trigger held from empty reaches
+   *   heatMax in 65 / 19.45 ≈ 3.34s: inside the "hold for 3-4s" target. Every other primary's
+   *   heat/s (see the audit table above) sits below Pulse Repeater's except Scatter Vents,
+   *   whose shotgun identity earns a faster cap on purpose (~2.9s) — that is the accepted
+   *   trade for its knife-range burst damage, not an oversight.
+   */
+  heatMax: 65,
+  /**
+   * Heat shed per second, unconditionally — whether or not the lockout below is active. This
+   * is also what sets recovery pace: cooling straight from heatMax to zero takes
+   * heatMax / heatCooling = 65 / 26 = 2.5s, landing in the "full cool in 2-3s" target.
+   */
   heatCooling: 26,
-  /** Seconds locked out after an overheat. */
-  ventDuration: 2.0,
+  /**
+   * Heat must bleed back under this before the primary can fire again after an overheat —
+   * mirrors `boostRearmThreshold`'s idiom exactly: crossing the cap latches a lockout flag
+   * (`PlayerState.venting`) that clears only once heat has fallen back past this line, rather
+   * than after a fixed timer, so anything that changes the cooling rate automatically changes
+   * recovery time too. Set to 20% of heatMax — the same fraction `boostRearmThreshold` (20) is
+   * of `boostMax` (100). Recovery time from a full cap is
+   * (heatMax - heatRearmThreshold) / heatCooling = (65 - 13) / 26 = 2.0s: a brief punish, not
+   * a dead zone.
+   */
+  heatRearmThreshold: 13,
 
   /** Distance the reticle sits in front of the ship, for aim projection. */
   reticleDistance: 300,

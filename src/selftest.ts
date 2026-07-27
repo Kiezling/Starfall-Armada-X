@@ -29,9 +29,15 @@ import { Pool } from './core/pool';
 import { GameClock } from './core/time';
 import * as THREE from 'three';
 import { FlightModel, lookRotation } from './ship/flight';
-import { createPlayerState } from './ship/player';
+import { createPlayerState, PlayerSystem } from './ship/player';
 import type { InputAction, InputState } from './core/types';
 import { TargetingSystem } from './combat/targeting';
+import type { EnemyQuery } from './combat/projectiles';
+import { ProjectileSystem } from './combat/projectiles';
+import { PLAYER } from './core/constants';
+import { TypedEventBus } from './core/events';
+import { BossEncounter, CombinedEnemyQuery, type BossContext } from './enemies/bosses';
+import { Hexard } from './enemies/bosses/hexard';
 
 export interface TestResult {
   name: string;
@@ -430,9 +436,25 @@ class ScriptedInput implements InputState {
     return this.held.has(action);
   }
 
-  wasPressed(): boolean {
-    return false;
+  /**
+   * Just-pressed edges, cleared by `endStep` exactly as InputManager clears its own. Without
+   * this the harness reported `false` for every edge, so anything driven by a tap rather than a
+   * hold — the blink, most obviously — could never fire in a test and would look green purely
+   * because it was never exercised.
+   */
+  press(action: InputAction): void {
+    this.pressed.add(action);
   }
+
+  endStep(): void {
+    this.pressed.clear();
+  }
+
+  wasPressed(action: InputAction): boolean {
+    return this.pressed.has(action);
+  }
+
+  private readonly pressed = new Set<InputAction>();
 }
 
 const STEP = 1 / 120;
@@ -535,6 +557,70 @@ function testFlightLoopsWithoutInverting(): void {
  * at exactly zero, so any residual turn would be the model's own doing — and a nose that
  * wanders on its own is unusable for aiming.
  */
+/**
+ * Boost is a blink now: a tap buys a fixed burst, and holding the key does nothing extra.
+ *
+ * That last half is the part worth guarding. The whole reason for the change is that a held
+ * boost was the fourth key competing for a limited-rollover keyboard's attention, so if holding
+ * the key silently kept re-triggering — or extended the burst — the change would have bought
+ * nothing while looking like it worked. The test therefore checks all three properties: one tap
+ * spends exactly one charge, the burst ends on its own timer while the key is still down, and a
+ * meter below the rearm threshold refuses to start a blink at all.
+ */
+function testBoostBlinksOnTapNotHold(): void {
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const flight = new FlightModel();
+  const input = new ScriptedInput();
+
+  // One tap, then keep the key held for well past the blink's duration.
+  const startCharge = player.boost;
+  input.hold('boost', true);
+  input.press('boost');
+  flight.update(player, input, STEP, 520, 1, null, 0);
+  input.endStep();
+
+  const spent = startCharge - player.boost;
+  check(
+    'a single boost tap spends exactly one blink charge',
+    Math.abs(spent - PLAYER.blinkCost) < 1e-3 && player.boosting,
+    `spent ${spent.toFixed(2)} (blinkCost=${PLAYER.blinkCost}), boosting=${player.boosting}`,
+  );
+
+  // Hold the key down across the whole burst and beyond. The edge never repeats, so charge must
+  // only ever climb back from here.
+  let lowest = player.boost;
+  let stillBoostingAtEnd = false;
+  for (let i = 0; i < 120; i++) {
+    flight.update(player, input, STEP, 520, 1, null, 0);
+    input.endStep();
+    lowest = Math.min(lowest, player.boost);
+    if (i === 60) stillBoostingAtEnd = player.boosting;
+  }
+
+  check(
+    'holding boost neither extends the blink nor re-triggers it',
+    !stillBoostingAtEnd && !player.boosting && lowest >= startCharge - PLAYER.blinkCost - 1e-3,
+    `boosting after 0.5s=${stillBoostingAtEnd}, at 1s=${player.boosting}, lowest charge=${lowest.toFixed(2)}`,
+  );
+
+  // Drain below the rearm threshold and confirm a tap is refused rather than feathered.
+  player.boost = PLAYER.boostRearmThreshold - 1;
+  const beforeRefused = player.boost;
+  input.press('boost');
+  flight.update(player, input, STEP, 520, 1, null, 0);
+  input.endStep();
+  check(
+    'a blink below the rearm threshold is refused, not feathered',
+    !player.boosting && player.boost >= beforeRefused,
+    `boosting=${player.boosting}, charge ${beforeRefused.toFixed(2)} -> ${player.boost.toFixed(2)}`,
+  );
+}
+
 function testFlightHoldsHeadingWhenReleased(): void {
   const player = createPlayerState({
     hullId: 'starfall',
@@ -835,6 +921,350 @@ function testGimbalAssist(): void {
   );
 }
 
+/**
+ * Overheating must have a real, self-clearing consequence (playtester issue #7a): crossing
+ * heatMax latches PlayerState.venting, and it must clear itself once heat bleeds back below
+ * heatRearmThreshold — no fixed timer — mirroring the boostRearmThreshold idiom.
+ */
+function testHeatOverheatLockout(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  // Simulate heat having just been pushed to the cap by a shot (weapons.ts's addHeat clamps
+  // the same way) and let PlayerSystem's next step discover the crossing, matching real frame
+  // order: weapon fire adds heat, then the following step's updateHeat() reacts to it.
+  player.heat = PLAYER.heatMax;
+  playerSystem.update(1 / 60);
+
+  check(
+    'reaching heatMax latches the overheat lockout',
+    player.venting,
+    `venting=${player.venting}, heat=${player.heat.toFixed(1)}`,
+  );
+
+  let steps = 0;
+  while (player.venting && steps < 600) {
+    playerSystem.update(1 / 60);
+    steps++;
+  }
+  const recoverySeconds = steps / 60;
+
+  check(
+    'the lockout clears on its own once heat drops below the rearm threshold',
+    !player.venting && player.heat <= PLAYER.heatRearmThreshold,
+    `cleared after ${recoverySeconds.toFixed(2)}s, heat=${player.heat.toFixed(1)}`,
+  );
+  check(
+    'recovery from a full overheat lands in the ~2-3s target, not a fixed 2s dead zone',
+    recoverySeconds > 1.5 && recoverySeconds < 3.0,
+    `recovery took ${recoverySeconds.toFixed(2)}s (heatMax=${PLAYER.heatMax}, heatCooling=${PLAYER.heatCooling}, heatRearmThreshold=${PLAYER.heatRearmThreshold})`,
+  );
+}
+
+/**
+ * Overcharge Vents repurposes overheat into a detonation (weapons.ts's addHeat/overchargeDetonate
+ * path). PlayerSystem.updateHeat must never latch the normal lockout for that augment — issue #7a
+ * explicitly calls out not breaking this interaction.
+ */
+function testOverchargeVentsBypassesLockout(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  player.stats.overchargeVents = true;
+  player.heat = PLAYER.heatMax;
+  playerSystem.update(1 / 60);
+
+  check(
+    'Overcharge Vents never latches the heat lockout',
+    !player.venting,
+    `venting=${player.venting} (should stay false — weapons.ts resets heat to 0 before this ever observes the cap in real play)`,
+  );
+}
+
+/**
+ * Lock-on must not snap instantly (playtester issue #14): a candidate has to be held for the
+ * documented 0.35-0.6s dwell window before TargetingSystem.lockedId actually changes.
+ */
+function testLockAcquisitionDwell(): void {
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+
+  const enemyPos = new THREE.Vector3(0, 0, -100); // dead ahead of the default (identity) facing.
+  const mockEnemy = { id: 7, position: enemyPos, velocity: new THREE.Vector3(), active: true, radius: 5 };
+  const mockEnemyQuery = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy,
+    getById: (id: number) => (id === 7 ? mockEnemy : null),
+  } as any;
+  const settings = { aimAssist: 0 } as any;
+  const step = 1 / 60;
+
+  targeting.update(player, mockEnemyQuery, 1, null as any, settings, step);
+  check(
+    'a dead-on-boresight target does not lock on the very first frame',
+    targeting.lockedId < 0,
+    `lockedId=${targeting.lockedId} after 1 frame — dwell should still be accumulating`,
+  );
+  check(
+    'acquisition progress is exposed and rising while dwelling',
+    targeting.acquisitionProgress > 0 && targeting.acquisitionProgress < 1,
+    `acquisitionProgress=${targeting.acquisitionProgress.toFixed(3)}`,
+  );
+
+  // Keep dwelling until the lock completes; the 1.0s ceiling is well past the documented
+  // window so a regression that never locks fails loudly instead of looping forever.
+  let seconds = step;
+  while (targeting.lockedId < 0 && seconds < 1.0) {
+    targeting.update(player, mockEnemyQuery, 1, null as any, settings, step);
+    seconds += step;
+  }
+  check(
+    'the lock completes within the documented 0.35-0.6s dwell window',
+    targeting.lockedId === 7 && seconds >= 0.35 && seconds <= 0.7,
+    `locked after ${seconds.toFixed(2)}s (lockedId=${targeting.lockedId})`,
+  );
+  check(
+    'acquisitionProgress reads back to 0 once a lock exists',
+    targeting.acquisitionProgress === 0,
+    `acquisitionProgress=${targeting.acquisitionProgress}`,
+  );
+}
+
+/** Partial acquisition progress must decay (not persist) once the reticle looks away. */
+function testLockAcquisitionDecaysWhenLookingAway(): void {
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+
+  const enemyPos = new THREE.Vector3(0, 0, -100);
+  const mockEnemy = { id: 3, position: enemyPos, velocity: new THREE.Vector3(), active: true, radius: 5 };
+  const withTarget = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy,
+    getById: (id: number) => (id === 3 ? mockEnemy : null),
+  } as any;
+  const empty = { queryNear: () => 0, getByIndex: () => null, getById: () => null } as any;
+  const settings = { aimAssist: 0 } as any;
+  const step = 1 / 60;
+
+  // Dwell for a quarter second — short of a full lock — then look away for a full second.
+  for (let i = 0; i < 15; i++) targeting.update(player, withTarget, 1, null as any, settings, step);
+  const midway = targeting.acquisitionProgress;
+  for (let i = 0; i < 60; i++) targeting.update(player, empty, 0, null as any, settings, step);
+
+  check(
+    'looking away decays acquisition progress back to zero instead of holding or completing it',
+    midway > 0 && targeting.acquisitionProgress === 0 && targeting.lockedId < 0,
+    `midway=${midway.toFixed(3)}, after look-away=${targeting.acquisitionProgress.toFixed(3)}, lockedId=${targeting.lockedId}`,
+  );
+}
+
+/**
+ * Playtester feedback #5/#6: bosses were excluded from lock-on entirely (because they live
+ * outside the pooled `EnemyQuery` the targeting system reads from) and were small enough to be
+ * "too easy" to just sit and shoot. Covers the `CombinedEnemyQuery` adapter end-to-end — a real
+ * `TargetingSystem` completing a real dwell-based lock through it — plus the collision-radius
+ * bump each boss got.
+ */
+function testBossLockOnAndHitboxes(): void {
+  const events = new TypedEventBus();
+  const scene = new THREE.Scene();
+  const projectiles = new ProjectileSystem(scene, events);
+  const encounter = new BossEncounter(scene, events, projectiles);
+
+  const bossCtx: BossContext = {
+    projectiles,
+    events,
+    playerPos: new THREE.Vector3(0, 0, 0),
+    playerVel: new THREE.Vector3(),
+    playerAlive: true,
+    arenaRadius: 520,
+    elapsed: 0,
+    onTelegraph: () => {},
+  };
+
+  encounter.start('vashkan', 500, 520, 2);
+  check(
+    'a boss is not lock-on-eligible during its name-card intro',
+    encounter.targetableEnemy === null,
+    `targetableEnemy=${encounter.targetableEnemy}`,
+  );
+
+  encounter.update(bossCtx, 2.1); // outlasts the 2s intro in one step
+  check(
+    'Vashkan becomes lock-on-eligible once its intro ends',
+    encounter.targetableEnemy !== null,
+    `targetableEnemy=${encounter.targetableEnemy}`,
+  );
+  check(
+    'Vashkan hitbox increased to 20 world units (was 14) — more than doubles the hittable area',
+    encounter.current?.radius === 20,
+    `radius=${encounter.current?.radius}`,
+  );
+
+  const emptyPooledEnemies: EnemyQuery = { queryNear: () => 0, getByIndex: () => null, getById: () => null };
+  const combined = new CombinedEnemyQuery(emptyPooledEnemies, encounter);
+  const buf = new Int32Array(8);
+  const nearCount = combined.queryNear(0, 0, 0, 10000, buf);
+  check(
+    'CombinedEnemyQuery surfaces the boss to a scan even with zero pooled enemies alive',
+    nearCount === 1,
+    `nearCount=${nearCount}`,
+  );
+  const resolved = nearCount > 0 ? combined.getByIndex(buf[0]!) : null;
+  check(
+    'the resolved boss entry round-trips through getById by its own id',
+    resolved !== null && combined.getById(resolved.id) === resolved,
+    `resolved id=${resolved ? resolved.id : null}`,
+  );
+
+  // Feed the merged query into the real dwell-based TargetingSystem, exactly as game.ts's
+  // wiring change would, to confirm the whole path locks onto a boss and not just the adapter.
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+  encounter.current!.position.set(0, 0, -100); // dead ahead of the default (identity) facing
+  const settings = { aimAssist: 0 } as unknown as import('./core/types').Settings;
+  const step = 1 / 60;
+  let seconds = 0;
+  while (targeting.lockedId < 0 && seconds < 1.0) {
+    targeting.update(player, combined, 0, null as unknown as THREE.Camera, settings, step);
+    seconds += step;
+  }
+  check(
+    'TargetingSystem completes a real lock on a boss through CombinedEnemyQuery',
+    resolved !== null && targeting.lockedId === resolved.id,
+    `lockedId=${targeting.lockedId}, expected=${resolved?.id}, after ${seconds.toFixed(2)}s`,
+  );
+
+  encounter.clear();
+
+  encounter.start('hexard', 500, 520, 0);
+  check(
+    'Hexard hitbox increased to 32 world units (was 26)',
+    encounter.current?.radius === 32,
+    `radius=${encounter.current?.radius}`,
+  );
+  encounter.clear();
+
+  encounter.start('mawCore', 500, 520, 0);
+  check(
+    'Maw Core hitbox increased to 40 world units (was 34)',
+    encounter.current?.radius === 40,
+    `radius=${encounter.current?.radius}`,
+  );
+  encounter.clear();
+}
+
+/**
+ * Playtester feedback #19: Hexard's three "adds" should force a priority switch, and the boss
+ * should visibly (not just numerically) become hard-to-hurt while they live. Covers the whole
+ * gate: resistant-but-not-immune core damage while segments live, full damage once they're
+ * cleared, and that segments themselves are never discounted (or there would be nothing to
+ * prioritise).
+ */
+function testHexardAddGating(): void {
+  const events = new TypedEventBus();
+  const scene = new THREE.Scene();
+  const projectiles = new ProjectileSystem(scene, events);
+  const hexard = new Hexard();
+  hexard.spawn(scene, 1000, 520);
+  hexard.configureSegments(1000);
+
+  const bossCtx: BossContext = {
+    projectiles,
+    events,
+    playerPos: new THREE.Vector3(0, 0, -50),
+    playerVel: new THREE.Vector3(),
+    playerAlive: true,
+    arenaRadius: 520,
+    elapsed: 0,
+    onTelegraph: () => {},
+  };
+
+  hexard.update(bossCtx, 1 / 60); // one step so segment orbit offsets are established
+
+  check(
+    'segments do not gate core damage before phase 1 activates them',
+    !hexard.coreResistant,
+    `coreResistant=${hexard.coreResistant}`,
+  );
+
+  // Cross the phase-1 threshold (startsBelow: 0.66) the same way ordinary player damage would,
+  // rather than reaching into protected phase-machinery.
+  hexard.damage(400, bossCtx); // 1000 -> 600, at/below the 660 threshold
+  hexard.update(bossCtx, 1.3); // outlast the 1.2s post-transition invulnerability window
+
+  check(
+    'Hexard becomes core-resistant once its segment phase activates',
+    hexard.coreResistant,
+    `coreResistant=${hexard.coreResistant}, liveSegments=${hexard.liveSegments}`,
+  );
+
+  const hullBeforeResisted = hexard.hull;
+  hexard.damage(100, bossCtx);
+  const resistedLoss = hullBeforeResisted - hexard.hull;
+  check(
+    'core damage is reduced to ~12% while adds are alive (an 85-90% reduction band) — resistant, not immune',
+    resistedLoss > 0 && resistedLoss < 20,
+    `expected ~12, got ${resistedLoss.toFixed(2)}`,
+  );
+
+  // Kill every segment directly. Each pool is totalHull*0.18/3 = 60; 70 clears it with margin.
+  for (let i = 0; i < 3; i++) hexard.damageSegment(i, 70, bossCtx);
+  check('all three segments are dead after enough direct damage', hexard.liveSegments === 0, `liveSegments=${hexard.liveSegments}`);
+  check('the core stops being resistant once every add is down', !hexard.coreResistant, `coreResistant=${hexard.coreResistant}`);
+
+  const hullBeforeFull = hexard.hull;
+  hexard.damage(100, bossCtx);
+  const fullLoss = hullBeforeFull - hexard.hull;
+  check(
+    'core damage returns to its full value once the adds are cleared',
+    Math.abs(fullLoss - 100) < 1e-6,
+    `expected 100, got ${fullLoss.toFixed(2)}`,
+  );
+
+  // A dead segment must not be damageable twice, and a hit on a live segment must not also land
+  // on the core through the resistant-core path.
+  const hullBeforeDeadSegment = hexard.hull;
+  const killedWholeBoss = hexard.damageSegment(0, 1000, bossCtx);
+  check(
+    'damaging an already-dead segment is a no-op',
+    !killedWholeBoss && hexard.hull === hullBeforeDeadSegment,
+    `hull ${hullBeforeDeadSegment} -> ${hexard.hull}`,
+  );
+}
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -850,9 +1280,16 @@ export function runSelfTest(): TestResult[] {
   testRngDeterminism();
   testFlightLoopsWithoutInverting();
   testFlightHoldsHeadingWhenReleased();
+  testBoostBlinksOnTapNotHold();
   testLookRotationIsARotation();
   testLockAssistConvergesAndYields();
   testLeadTargetPrediction();
   testGimbalAssist();
+  testHeatOverheatLockout();
+  testOverchargeVentsBypassesLockout();
+  testLockAcquisitionDwell();
+  testLockAcquisitionDecaysWhenLookingAway();
+  testBossLockOnAndHitboxes();
+  testHexardAddGating();
   return results;
 }

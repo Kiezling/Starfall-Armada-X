@@ -58,6 +58,12 @@ const AXIS_SMOOTH_TIME = 0.12;
 const AIM_SMOOTH_TIME = 0.075;
 /** Fraction of the pointer-lock reticle's offset from centre retained after one second. */
 const RETICLE_DRIFT_RETAIN = 0.88;
+/**
+ * Units of throttle setpoint per second while a throttle key is held in cruise mode. At 1.4 a
+ * full stop-to-max sweep takes ~0.7 s — brisk enough to feel responsive, slow enough that a tap
+ * is a fine adjustment rather than a jump to the stop.
+ */
+const CRUISE_RAMP_RATE = 1.4;
 /** Pixel-to-NDC scale at `mouseSensitivity` == 1, before the user's multiplier is applied. */
 const MOUSE_PIXEL_SCALE = 0.0022;
 
@@ -135,6 +141,9 @@ export class InputManager implements InputState {
 
   private mouseLeftDown = false;
   private mouseRightDown = false;
+
+  /** Persistent throttle setpoint in -1..1, used only while `cruiseThrottle` is enabled. */
+  private cruiseSetpoint = 0;
 
   private device: Device = Device.Keyboard;
   private rebindTarget: InputAction | null = null;
@@ -254,7 +263,12 @@ export class InputManager implements InputState {
     this.keyAimX = springDamp(this.keyAimX, aimXTarget, this.keyAimXVel, AIM_SMOOTH_TIME, rawDt);
     this.keyAimY = springDamp(this.keyAimY, signedYTarget, this.keyAimYVel, AIM_SMOOTH_TIME, rawDt);
 
-    const throttleTarget = (this.isDown('throttleUp') ? 1 : 0) - (this.isDown('throttleDown') ? 1 : 0);
+    this.updateLatches(rawDt);
+
+    const throttleKeys = (this.isDown('throttleUp') ? 1 : 0) - (this.isDown('throttleDown') ? 1 : 0);
+    // In cruise mode the keys ramp a setpoint that persists once released; otherwise they are
+    // the target directly and releasing them coasts the ship back to a stop.
+    const throttleTarget = this.settings.cruiseThrottle ? this.cruiseSetpoint : throttleKeys;
     const strafeTarget = (this.isDown('strafeRight') ? 1 : 0) - (this.isDown('strafeLeft') ? 1 : 0);
     const rollTarget = (this.isDown('rollRight') ? 1 : 0) - (this.isDown('rollLeft') ? 1 : 0);
 
@@ -288,6 +302,27 @@ export class InputManager implements InputState {
       this.device === Device.Keyboard
         ? aimXTarget !== 0 || aimYTarget !== 0
         : Math.abs(this._aimX) > 0.08 || Math.abs(this._aimY) > 0.08;
+  }
+
+  /**
+   * Advances the cruise-throttle setpoint. Inert — and reset rather than left holding a stale
+   * value — while the option is off, so flipping it off mid-flight cannot strand the ship at a
+   * throttle the player can no longer see or change.
+   */
+  private updateLatches(rawDt: number): void {
+    if (this.settings.cruiseThrottle) {
+      const ramp = (this.isDown('throttleUp') ? 1 : 0) - (this.isDown('throttleDown') ? 1 : 0);
+      if (ramp !== 0) {
+        this.cruiseSetpoint = clamp(this.cruiseSetpoint + ramp * CRUISE_RAMP_RATE * rawDt, -1, 1);
+      }
+    } else {
+      this.cruiseSetpoint = 0;
+    }
+  }
+
+  /** Zeroes the cruise setpoint. Called when a run starts so each life begins at a dead stop. */
+  resetCruise(): void {
+    this.cruiseSetpoint = 0;
   }
 
   /** Clears the just-pressed edges and polls the gamepad. Called once per simulation step. */

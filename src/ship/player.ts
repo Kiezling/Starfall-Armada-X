@@ -29,6 +29,20 @@ export interface PlayerInit {
   difficulty: Difficulty;
 }
 
+/**
+ * Wraith's stowed second primary (see `swapPrimary` below). Lance Driver is the default pair
+ * for almost any Hangar pick — it is the one primary with real pierce and range, so it reads
+ * as a genuine second option (a "poke" tool) next to whatever close-range or rapid-fire
+ * weapon the pilot chose. But if the pilot's chosen primary *is* Lance Driver, pairing it with
+ * itself would mean pressing the swap key and watching nothing happen — precisely the "weapon
+ * switching does not work" complaint. Pulse Repeater — fast, cheap, zero commitment, the
+ * opposite pole of the kit — stands in for that one case instead, so the swap always changes
+ * something.
+ */
+function pickAltPrimary(primary: PrimaryWeaponId): PrimaryWeaponId {
+  return primary === 'lanceDriver' ? 'pulseRepeater' : 'lanceDriver';
+}
+
 /** Builds a fresh PlayerState. Called once; subsequent runs go through `reset`. */
 export function createPlayerState(init: PlayerInit): PlayerState {
   const def: HullDef = getHull(init.hullId);
@@ -49,6 +63,7 @@ export function createPlayerState(init: PlayerInit): PlayerState {
     venting: false,
     boost: PLAYER.boostMax,
     boosting: false,
+    blinkTimer: 0,
 
     driftTimer: 0,
     driftCooldown: 0,
@@ -96,8 +111,6 @@ export class PlayerSystem {
   private secondWindUsed = false;
   /** Latches so the low-hull warning fires on the threshold crossing, not every frame. */
   private lowHullWarned = false;
-
-  private ventTimer = 0;
 
   constructor(state: PlayerState, events: EventBus) {
     this.state = state;
@@ -161,43 +174,39 @@ export class PlayerSystem {
   }
 
   /**
-   * Heat cools whenever the weapon system is not adding to it. Overheating locks the guns for
-   * a fixed vent — unless Overcharge Vents is held, in which case the weapon system handles
-   * the detonation instead and this never latches.
+   * Heat cools every frame at the same flat rate (PLAYER.heatCooling), whether or not the
+   * lockout below is currently active — see that constant's doc comment for the arithmetic
+   * this produces (3-4s to overheat on the base loadout, 2-3s to fully cool).
+   *
+   * Reaching heatMax latches `venting`, which weapons.ts reads to block the primary. Unlike
+   * the old fixed-duration vent, the lockout clears the instant heat bleeds back below
+   * `heatRearmThreshold` — the same "crosses a threshold, not a timer" idiom flight.ts uses
+   * for `boostRearmThreshold`. That means anything that changes the cooling rate (a hull mod,
+   * a future augment) changes recovery time to match, with no second number to keep in sync.
+   *
+   * Overcharge Vents repurposes the whole mechanic: weapons.ts's addHeat() detonates and
+   * resets heat to 0 the instant it crosses heatMax, so this function should never actually
+   * see heat sitting at the cap while that augment is held — the `overchargeVents` check
+   * below is a defensive backstop against that invariant, not the primary gate.
    */
   private updateHeat(dt: number): void {
     const p = this.state;
 
-    if (p.venting) {
-      this.ventTimer -= dt;
-      // Vent drains heat over the whole window so the meter visibly empties rather than
-      // snapping to zero at the end.
-      p.heat = Math.max(0, p.heat - (PLAYER.heatMax / PLAYER.ventDuration) * dt);
-      if (this.ventTimer <= 0) {
-        p.venting = false;
-        p.heat = 0;
-        this.events.emit('player:vented', {});
-      }
-      return;
+    // Check the crossing against the heat value carried over from last step *before* applying
+    // this step's cooling. Doing it the other way round — cool, then compare — would let a
+    // single frame's cooling nudge heat back under heatMax in the very same step it arrived
+    // there, so the lockout would never actually latch.
+    if (!p.venting && p.heat >= PLAYER.heatMax && !p.stats.overchargeVents) {
+      p.venting = true;
+      this.events.emit('player:overheat', {});
     }
 
     p.heat = Math.max(0, p.heat - PLAYER.heatCooling * dt);
-  }
 
-  /** Called by the weapon system after adding heat, so the overheat check happens in one place. */
-  checkOverheat(): boolean {
-    const p = this.state;
-    if (p.venting || p.heat < PLAYER.heatMax) return false;
-    if (p.stats.overchargeVents) {
-      // Overcharge Vents converts the penalty into an opportunity: the weapon system detonates
-      // around the player instead of locking out, so heat becomes a resource to push.
-      p.heat = 0;
-      return true;
+    if (p.venting && p.heat <= PLAYER.heatRearmThreshold) {
+      p.venting = false;
+      this.events.emit('player:vented', {});
     }
-    p.venting = true;
-    this.ventTimer = PLAYER.ventDuration;
-    this.events.emit('player:overheat', {});
-    return false;
   }
 
   private updateShield(dt: number): void {
@@ -346,7 +355,6 @@ export class PlayerSystem {
     p.shield = p.stats.maxShield;
     p.heat = 0;
     p.venting = false;
-    this.ventTimer = 0;
     this.lowHullWarned = false;
   }
 
@@ -369,6 +377,7 @@ export class PlayerSystem {
     p.venting = false;
     p.boost = PLAYER.boostMax;
     p.boosting = false;
+    p.blinkTimer = 0;
 
     p.driftTimer = 0;
     p.driftCooldown = 0;
@@ -380,7 +389,7 @@ export class PlayerSystem {
 
     p.primary = init.primary;
     p.secondary = init.secondary;
-    p.altPrimary = init.hullId === 'wraith' ? 'lanceDriver' : null;
+    p.altPrimary = init.hullId === 'wraith' ? pickAltPrimary(init.primary) : null;
 
     p.primaryCooldown = 0;
     p.secondaryCooldown = 0;
@@ -395,7 +404,6 @@ export class PlayerSystem {
     this.battery = 0;
     this.secondWindUsed = false;
     this.lowHullWarned = false;
-    this.ventTimer = 0;
   }
 
   /** Wraith only: swap the active primary with the stowed one. */

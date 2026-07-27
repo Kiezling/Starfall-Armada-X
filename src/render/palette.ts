@@ -68,7 +68,17 @@ export interface Palette {
 const DEFAULT_PALETTE: Palette = {
   name: 'Default',
   playerProjectile: [0xffd166, 0xfff3c4, 0xffc85a, 0xffe08a, 0xffcc70, 0xfff9e6],
-  enemyProjectile: [0x1f9fd8, 0xff4fd8, 0x3fc0e8, 0xc44fff],
+  // Indexed by ENEMY_ORDER position (src/enemies/types.ts), which enemyProjectileColor() wraps
+  // with `% enemyProjectile.length`. This used to be 4 long against a 6-entry ENEMY_ORDER, so
+  // index 4 (carrier) silently reused index 0's colour and index 5 (mineLayer) reused index 1's
+  // — meaning the Mine Layer's stationary proximity mines rendered in the exact same pink as
+  // the Interceptor's fast dogfighting bolts. That's the playtester-reported "pink floating
+  // orbs, no idea what they are": a motionless hazard sharing its only readable colour cue with
+  // a fast-moving one, with nothing else (no pulse, no distinct shape — both are the same round
+  // orb geometry per projectiles.ts) to tell them apart. Extending to one entry per archetype
+  // removes the collision; see this file's header and the accompanying report for why the mine
+  // itself still deserves a stronger telegraph than colour alone.
+  enemyProjectile: [0x1f9fd8, 0xff4fd8, 0x3fc0e8, 0xc44fff, 0x2fb8a0, 0x8a5cff],
   telegraphAimed: 0xffd23f,
   telegraphLethal: 0xff2d55,
 
@@ -111,7 +121,9 @@ const DEUTERANOPIA_PALETTE: Palette = {
   ...DEFAULT_PALETTE,
   name: 'Deuteranopia',
   playerProjectile: [0xffe066, 0xfffbe0, 0xffc93c, 0xfff0a8, 0xffd24d, 0xfffdf0],
-  enemyProjectile: [0x2f9dff, 0x8f6bff, 0x3aa8e8, 0xb08cff],
+  // See DEFAULT_PALETTE's enemyProjectile comment: extended to 6 (one per ENEMY_ORDER entry) so
+  // the Mine Layer's mines no longer alias the Interceptor's bolts.
+  enemyProjectile: [0x2f9dff, 0x8f6bff, 0x3aa8e8, 0xb08cff, 0x2fb0a0, 0x5f7fff],
   telegraphAimed: 0xffe066,
   telegraphLethal: 0x1f4fff,
 
@@ -138,7 +150,9 @@ const PROTANOPIA_PALETTE: Palette = {
   ...DEUTERANOPIA_PALETTE,
   name: 'Protanopia',
   playerProjectile: [0xfff0a0, 0xffffff, 0xffe066, 0xfff8d0, 0xffd83c, 0xfffef8],
-  enemyProjectile: [0x0090ff, 0x7a5cff, 0x2f9ae0, 0x9f7dff],
+  // See DEFAULT_PALETTE's enemyProjectile comment: extended to 6 (one per ENEMY_ORDER entry) so
+  // the Mine Layer's mines no longer alias the Interceptor's bolts.
+  enemyProjectile: [0x0090ff, 0x7a5cff, 0x2f9ae0, 0x9f7dff, 0x2fa090, 0x4f6fff],
   telegraphAimed: 0xfff0a0,
   telegraphLethal: 0x0060ff,
   playerEngine: 0xcaf2ff,
@@ -153,7 +167,12 @@ const TRITANOPIA_PALETTE: Palette = {
   ...DEFAULT_PALETTE,
   name: 'Tritanopia',
   playerProjectile: [0xffc0cd, 0xffe0e6, 0xffcad4, 0xffd6de, 0xffb8c8, 0xfff0f3],
-  enemyProjectile: [0x22b899, 0x00b894, 0x35c9a8, 0x0e8f74],
+  // See DEFAULT_PALETTE's enemyProjectile comment: extended to 6 (one per ENEMY_ORDER entry) so
+  // the Mine Layer's mines no longer alias the Interceptor's bolts. Stays within the same
+  // green/teal family as the rest of this palette's enemy set (tritanopes lose blue/yellow
+  // discrimination, so hue variety outside green/teal-vs-red/pink is not a usable channel here);
+  // distinction comes from lightness/saturation instead, same as the existing four.
+  enemyProjectile: [0x22b899, 0x00b894, 0x35c9a8, 0x0e8f74, 0x1f8f70, 0x2fa860],
   telegraphAimed: 0xff9db0,
   telegraphLethal: 0xff1f4d,
 

@@ -68,7 +68,13 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
   pulseRepeater: {
     id: 'pulseRepeater', displayName: 'Pulse Repeater', isPrimary: true,
     description: 'Fast, tight, forgiving. The baseline every other weapon is measured against.',
-    damage: 9, fireInterval: 0.11, projectileSpeed: 420, heatPerShot: 5, spread: 0.012, shots: 1,
+    // Spread ~3° (0.052 rad). This is the rapid-fire baseline, so it earns the most spray of
+    // any single-target primary short of the shotgun: at close range (~30m) the cone is
+    // ~1.6 units wide — about one small enemy's radius, so it still lands close to reliably —
+    // but by 200m it has opened to ~10 units, wide enough that landing every shot on a small,
+    // moving target takes real aim rather than a locked reticle doing the work. Lance Driver
+    // stays at 0 spread below on purpose; this is the weapon that should *not* feel pinpoint.
+    damage: 9, fireInterval: 0.11, projectileSpeed: 420, heatPerShot: 5, spread: 0.052, shots: 1,
     chargeTime: 0, range: 900, aoe: 0, pierce: 0, cooldown: 0, charges: 0, colorIndex: 0,
   },
   lanceDriver: {
@@ -92,7 +98,10 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
   flakBattery: {
     id: 'flakBattery', displayName: 'Flak Battery', isPrimary: true,
     description: 'Proximity-fused shells. Slow projectiles punish bad leading, reward good.',
-    damage: 30, fireInterval: 0.42, projectileSpeed: 210, heatPerShot: 17, spread: 0.03, shots: 1,
+    // ~2.3° (0.04 rad) — a smaller bump than Pulse Repeater's. Flak's skill test is leading a
+    // slow shell, not raw aim, and its 34-radius proximity fuse already forgives near misses;
+    // stacking a wide cone on top of both would erase the "reward good leading" identity.
+    damage: 30, fireInterval: 0.42, projectileSpeed: 210, heatPerShot: 17, spread: 0.04, shots: 1,
     chargeTime: 0, range: 700, aoe: 34, pierce: 0, cooldown: 0, charges: 0, colorIndex: 5,
   },
   singularityCoil: {
@@ -286,10 +295,18 @@ export class WeaponSystem {
 
   private addHeat(player: PlayerState, amount: number): void {
     player.heat = Math.min(PLAYER.heatMax, player.heat + amount);
-    if (player.heat >= PLAYER.heatMax && player.stats.overchargeVents) {
-      // The augment converts the penalty into an opportunity; PlayerSystem clears the heat and
-      // the wiring layer detonates around the player.
-      this.overchargePending = true;
+    if (player.heat >= PLAYER.heatMax) {
+      if (player.stats.overchargeVents) {
+        // The augment converts the penalty into an opportunity: detonate now and reset heat
+        // straight back to 0. Resetting here (not just flagging) matters — without it, heat
+        // sits pinned at the cap and every subsequent shot would see heat >= heatMax again and
+        // re-trigger the detonation, turning one overheat into a full-auto explosion spam
+        // instead of one payoff per heat-cap crossing.
+        player.heat = 0;
+        this.overchargePending = true;
+      }
+      // else: PlayerSystem.updateHeat() (ship/player.ts) latches the forced-cooldown lockout
+      // the next simulation step, once it observes heat sitting at the cap.
     }
   }
 

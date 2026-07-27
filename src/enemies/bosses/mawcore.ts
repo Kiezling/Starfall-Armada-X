@@ -28,6 +28,20 @@ import {
 const PLATE_COUNT = 6;
 const UP = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
 const pull = /*#__PURE__*/ new THREE.Vector3();
+const RING_AXIS = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
+const LOCK_PLATE_WORLD = /*#__PURE__*/ new THREE.Vector3();
+
+/**
+ * Playtester feedback #6: sector 1/3 bosses read as too easy partly because they were too small
+ * and too static. 34 -> 40 world units (+18%) on the core's collision radius. The plate ring —
+ * which *is* the visible silhouette players aim at — is scaled by the same factor (both its
+ * orbit radius and its own box dimensions) so the enlarged hit-sphere doesn't extend past what
+ * the player can actually see, which would read as phantom hits.
+ */
+const OLD_RADIUS = 34;
+const NEW_RADIUS = 40;
+const HIT_SCALE = NEW_RADIUS / OLD_RADIUS;
+const PLATE_ORBIT_RADIUS = 30 * HIT_SCALE;
 
 interface Plate {
   mesh: THREE.Mesh;
@@ -44,10 +58,13 @@ export class MawCore extends Boss {
   private spiralAngle = 0;
   private ringAngle = 0;
   private core: THREE.Mesh | null = null;
+  /** Alternates `fireTurretRing` between flat and tilted so suppression fire doesn't read as a
+   * single plane (playtester feedback #6). */
+  private ringTiltFlip = false;
 
   constructor() {
     super('mawCore', 'THE MAW CORE', 'Where the Armada was built');
-    this.radius = 34;
+    this.radius = NEW_RADIUS;
   }
 
   override get phases(): readonly BossPhase[] {
@@ -64,7 +81,7 @@ export class MawCore extends Boss {
       metalness: 0.3,
       roughness: 0.6,
     });
-    this.core = new THREE.Mesh(new THREE.IcosahedronGeometry(14, 2), coreMat);
+    this.core = new THREE.Mesh(new THREE.IcosahedronGeometry(14 * HIT_SCALE, 2), coreMat);
     this.root.add(this.core);
 
     const plateMat = new THREE.MeshStandardMaterial({
@@ -76,8 +93,8 @@ export class MawCore extends Boss {
 
     for (let i = 0; i < PLATE_COUNT; i++) {
       const angle = (i / PLATE_COUNT) * TAU;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(16, 4, 10), plateMat.clone());
-      mesh.position.set(Math.cos(angle) * 30, 0, Math.sin(angle) * 30);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(16 * HIT_SCALE, 4 * HIT_SCALE, 10 * HIT_SCALE), plateMat.clone());
+      mesh.position.set(Math.cos(angle) * PLATE_ORBIT_RADIUS, 0, Math.sin(angle) * PLATE_ORBIT_RADIUS);
       mesh.rotation.y = -angle;
       this.root.add(mesh);
       this.plates.push({ mesh, alive: true, hull: 1, maxHull: 1, angle });
@@ -170,17 +187,40 @@ export class MawCore extends Boss {
   protected move(_ctx: BossContext, dt: number): void {
     const phase = this.phase;
 
-    // The core is the arena's anchor: it sits near the centre and rotates.
-    this.position.set(0, Math.sin(this.age * 0.3) * 10, 0);
+    // The core is still "the arena's anchor" (it stays near centre and rotates), but a fully
+    // fixed point read as trivially easy to hit — playtester feedback #6 called sector 1/3
+    // bosses "too easy" partly because they were static. A slow Lissajous-style drift (two
+    // independent-period sines) keeps it near the middle while still making the player track a
+    // moving point, the same spirit as Hexard's figure-eight wander.
+    const driftRadius = 55;
+    this.position.x = Math.sin(this.age * 0.18) * driftRadius;
+    this.position.z = Math.cos(this.age * 0.13) * driftRadius;
+    this.position.y = Math.sin(this.age * 0.3) * 16;
     this.ringAngle += dt * 0.5 * phase.speed;
     this.quaternion.setFromAxisAngle(UP, this.ringAngle);
 
     for (const plate of this.plates) {
       if (!plate.alive) continue;
       const a = plate.angle + this.ringAngle;
-      plate.mesh.position.set(Math.cos(a) * 30, 0, Math.sin(a) * 30);
+      plate.mesh.position.set(Math.cos(a) * PLATE_ORBIT_RADIUS, 0, Math.sin(a) * PLATE_ORBIT_RADIUS);
       plate.mesh.rotation.y = -a;
     }
+  }
+
+  /**
+   * Locks onto the currently lit plate rather than the core centre while one exists — it's the
+   * only thing actually vulnerable (see `damage()` below), so that's the point aim assist and
+   * the HUD reticle should track. Falls back to the core once every plate is down.
+   */
+  override get lockPoint(): THREE.Vector3 {
+    if (this.litPlate < 0) return this.position;
+    const plate = this.plates[this.litPlate];
+    if (!plate) return this.position;
+    return LOCK_PLATE_WORLD.copy(plate.mesh.position).add(this.position);
+  }
+
+  override get lockRadius(): number {
+    return this.litPlate >= 0 ? 8 * HIT_SCALE : this.radius;
   }
 
   /** Gravity field: drags the player inward. Phase 2 onward. */
@@ -194,8 +234,21 @@ export class MawCore extends Boss {
     ctx.playerVel.addScaledVector(pull, strength * falloff * dt);
   }
 
+  /**
+   * Alternates between the historical flat ring and a tilted one every emission — the ring's
+   * job here is suppression pressure while the player solves the lit-plate puzzle, not itself a
+   * mechanic to teach, so unlike Hexard's phase-gated tilt this one is safe to vary from the
+   * start (playtester feedback #6: "only shoots along one plane").
+   */
   fireTurretRing(ctx: BossContext, damage: number): void {
-    patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle);
+    this.ringTiltFlip = !this.ringTiltFlip;
+    if (this.ringTiltFlip) {
+      const tilt = 0.5; // ~27 deg off vertical — enough to force a vertical dodge, still clearly a ring
+      RING_AXIS.set(Math.sin(this.ringAngle) * tilt, 1, Math.cos(this.ringAngle) * tilt).normalize();
+      patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle, Infinity, 0, RING_AXIS);
+    } else {
+      patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle);
+    }
   }
 
   fireShell(ctx: BossContext, damage: number): void {

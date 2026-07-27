@@ -76,8 +76,9 @@ export const ALT_KEYBINDS: Partial<Record<InputAction, string>> = {
  * Bumped whenever a *control-scheme* default changes in a way that must reach players who
  * already have a saved settings blob. Cosmetic or audio defaults do not need a bump.
  * 2 — pitch inverted by default (Up = nose down) alongside the removal of the pitch limit.
+ * 3 — cruise throttle added; boost became a tapped blink rather than a held drain.
  */
-const SETTINGS_SCHEMA = 2;
+const SETTINGS_SCHEMA = 3;
 
 /** The only action names a keybind entry may legally refer to. */
 const KNOWN_ACTIONS = Object.keys(DEFAULT_KEYBINDS) as InputAction[];
@@ -105,6 +106,12 @@ export function createDefaultSettings(): Settings {
     // "Invert Y" toggle in Settings → Gameplay flips it back for players who prefer camera-style.
     invertY: true,
     mouseSensitivity: 1,
+
+    // Defaults off: it changes how the ship feels to fly, and a player whose keyboard has full
+    // rollover should not silently get a different control model than the one the flight tuning
+    // was built against.
+    cruiseThrottle: false,
+
     keybinds: { ...DEFAULT_KEYBINDS },
 
     showPerfOverlay: false,
@@ -190,6 +197,11 @@ export function loadSettings(): Settings {
       MOUSE_SENSITIVITY_MIN,
       MOUSE_SENSITIVITY_MAX,
     ),
+    // Rollover relief is a deliberate accessibility choice about the player's hardware, not a
+    // tuning default, so it survives a schema bump rather than being reset with the rest of the
+    // control scheme.
+    cruiseThrottle: readBool(rec.cruiseThrottle, defaults.cruiseThrottle),
+
     keybinds: sanitizeKeybinds(rec.keybinds),
 
     showPerfOverlay: readBool(rec.showPerfOverlay, defaults.showPerfOverlay),

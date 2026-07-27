@@ -77,6 +77,13 @@ const CONTROL_ROWS: readonly (readonly [string, string])[] = [
   ['ESC  P', 'Pause'],
 ];
 
+/**
+ * How long the "SECTOR # CLEARED" card sits on screen before it auto-dismisses and hands off to
+ * the draft screen underneath it (see `showSectorClear`'s doc comment). Not the same number as
+ * the mm:ss run-time text the card also displays — that one comes from the caller.
+ */
+const SECTOR_CLEAR_AUTO_HIDE_SECONDS = 2.5;
+
 const DIFFICULTY_LABELS: readonly string[] = ['Cadet', 'Pilot', 'Ace', 'Nightmare'];
 const AIM_ASSIST_LABELS: readonly string[] = ['Off', 'Light', 'Strong'];
 
@@ -147,7 +154,21 @@ export class Menus {
   private readonly bossIntroPanel: HTMLDivElement;
   private readonly bossIntroName: HTMLDivElement;
   private readonly bossIntroSubtitle: HTMLDivElement;
-  private bossIntroTimeout: number | null = null;
+
+  /**
+   * Shared by every screen that auto-advances instead of waiting on a button press (currently
+   * sector-clear and boss-intro). Only one such screen is ever showing at a time — `showScreen`
+   * clears this on every transition — so one timer handle is enough; it does not need to be
+   * per-screen state.
+   */
+  private autoHideTimeout: number | null = null;
+  /**
+   * Fired once when the sector-clear card is dismissed, by whichever path gets there first: the
+   * auto-hide timer or the player pressing Escape/Enter early. This is how `showSectorClear`
+   * hands control back to the caller (opening the draft) — see its doc comment for why the card
+   * cannot just be shown and left to sit on top of the draft screen indefinitely.
+   */
+  private onSectorClearDismiss: () => void = () => {};
 
   private currentScreen: ScreenName = 'none';
 
@@ -264,7 +285,7 @@ export class Menus {
   }
 
   private showScreen(screen: ScreenName, panel: HTMLDivElement): void {
-    this.clearBossIntroTimer();
+    this.clearAutoHideTimer();
     this.hideAllPanels();
     panel.style.display = '';
     this.currentScreen = screen;
@@ -406,13 +427,45 @@ export class Menus {
     this.focusFirstAction();
   }
 
-  showSectorClear(sector: number, name: string, seconds: number): void {
+  /**
+   * Shows the "SECTOR # CLEARED" card. `runTimeSeconds` is display-only (the run clock, formatted
+   * mm:ss) — it has nothing to do with how long the card stays up.
+   *
+   * This screen is a *gate*, not a side note: the draft screen opens right underneath it (higher
+   * z-index — see styles.css), and used to just sit there forever, since nothing ever hid it —
+   * unlike `showBossIntro`, it had no auto-hide timer. That left it permanently covering the
+   * draft cards (blocking selection) and, because nothing ever dismissed it either, still
+   * covering the *next* encounter after the player picked an augment blind through it. `onDismiss`
+   * is therefore mandatory, not optional: the caller's "open the draft" step belongs inside it,
+   * so the draft cannot open while this card is still covering the screen, and this card cannot
+   * outlive its own dismissal. See `dismissSectorClear`.
+   */
+  showSectorClear(sector: number, name: string, runTimeSeconds: number, onDismiss: () => void): void {
     this.applyPalette();
     this.sectorClearHeading.textContent = `SECTOR ${sector} CLEARED`;
     this.sectorClearName.textContent = name;
-    this.sectorClearTime.textContent = formatRunTime(seconds);
+    this.sectorClearTime.textContent = formatRunTime(runTimeSeconds);
     this.actionFocusables = [];
+    this.onSectorClearDismiss = onDismiss;
     this.showScreen('sectorclear', this.sectorClearPanel);
+
+    this.autoHideTimeout = window.setTimeout(() => {
+      this.autoHideTimeout = null;
+      if (this.currentScreen === 'sectorclear') this.dismissSectorClear();
+    }, SECTOR_CLEAR_AUTO_HIDE_SECONDS * 1000);
+  }
+
+  /**
+   * The only correct way to leave the sector-clear screen: hides the card first, *then* fires the
+   * `onDismiss` callback passed to `showSectorClear` (opening the draft), so the draft never opens
+   * underneath a card that is still on top of it. Idempotent — clears the callback before invoking
+   * it, so a stray double-dismiss (timer racing a keypress) cannot open the draft twice.
+   */
+  private dismissSectorClear(): void {
+    const onDismiss = this.onSectorClearDismiss;
+    this.onSectorClearDismiss = () => {};
+    this.hideAll();
+    onDismiss();
   }
 
   showBossIntro(name: string, subtitle: string, seconds: number): void {
@@ -422,22 +475,22 @@ export class Menus {
     this.actionFocusables = [];
     this.showScreen('bossintro', this.bossIntroPanel);
 
-    this.clearBossIntroTimer();
-    this.bossIntroTimeout = window.setTimeout(() => {
-      this.bossIntroTimeout = null;
+    this.autoHideTimeout = window.setTimeout(() => {
+      this.autoHideTimeout = null;
       if (this.currentScreen === 'bossintro') this.hideAll();
     }, Math.max(0, seconds) * 1000);
   }
 
-  private clearBossIntroTimer(): void {
-    if (this.bossIntroTimeout !== null) {
-      window.clearTimeout(this.bossIntroTimeout);
-      this.bossIntroTimeout = null;
+  private clearAutoHideTimer(): void {
+    if (this.autoHideTimeout !== null) {
+      window.clearTimeout(this.autoHideTimeout);
+      this.autoHideTimeout = null;
     }
   }
 
   hideAll(): void {
-    this.clearBossIntroTimer();
+    this.clearAutoHideTimer();
+    this.onSectorClearDismiss = () => {};
     this.hideAllPanels();
     this.root.classList.remove('is-visible');
     this.currentScreen = 'none';
@@ -729,6 +782,8 @@ export class Menus {
           this.onPauseResume();
           return true;
         case 'sectorclear':
+          this.dismissSectorClear();
+          return true;
         case 'bossintro':
           this.hideAll();
           return true;
@@ -739,7 +794,8 @@ export class Menus {
 
     if (this.currentScreen === 'sectorclear' || this.currentScreen === 'bossintro') {
       if (code === 'Enter' || code === 'Space') {
-        this.hideAll();
+        if (this.currentScreen === 'sectorclear') this.dismissSectorClear();
+        else this.hideAll();
         return true;
       }
       return false;
@@ -796,7 +852,7 @@ export class Menus {
   }
 
   dispose(): void {
-    this.clearBossIntroTimer();
+    this.clearAutoHideTimer();
     this.root.remove();
     this.actionFocusables = [];
     this.settingsRows = [];

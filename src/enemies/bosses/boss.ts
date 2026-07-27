@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import { ProjectileKind, Team, type BossId, type EventBus } from '../../core/types';
-import { TAU, clamp01, scratchVec3A, scratchVec3B } from '../../core/math';
+import { TAU, WORLD_UP, clamp01, scratchVec3A, scratchVec3B, scratchVec3C, scratchVec3D } from '../../core/math';
 import { palette } from '../../render/palette';
 import type { ProjectileSystem } from '../../combat/projectiles';
 
@@ -114,6 +114,9 @@ export abstract class Boss {
   protected transitionTimer = 0;
 
   protected readonly root = new THREE.Group();
+  /** Last known player position, cached each `update()` so subclasses (Hexard's nearest-add
+   * lock point) can reason about the player without threading a fresh vector through getters. */
+  protected readonly playerPosCache = new THREE.Vector3();
 
   constructor(id: BossId, displayName: string, subtitle: string) {
     this.id = id;
@@ -147,6 +150,36 @@ export abstract class Boss {
     return this.maxHull > 0 ? clamp01(this.hull / this.maxHull) : 0;
   }
 
+  /**
+   * World point the targeting/HUD layer should lock onto (playtester feedback #5: bosses were
+   * entirely invisible to lock-on, which made the mobile Vashkan very hard to track with
+   * keyboard aiming). Defaults to the collision centre; a boss with a rotating single weak
+   * point (Maw Core's lit plate, Hexard's live add) overrides this so the reticle and aim
+   * assist track the thing that actually takes full damage rather than the whole hurtbox.
+   */
+  get lockPoint(): THREE.Vector3 {
+    return this.position;
+  }
+
+  /**
+   * Radius paired with `lockPoint` for the lock cone / "already close" aim-assist test. Kept
+   * separate from `radius` (the collision hitbox) because a weak-point lock should read as a
+   * tighter, more deliberate reticle than "anywhere on this 30-unit hull".
+   */
+  get lockRadius(): number {
+    return this.radius;
+  }
+
+  /**
+   * True while the boss cannot be damaged (spawn intro, phase-transition grace window). Locking
+   * onto something the player cannot currently hurt would read as a broken lock, so the
+   * boss-to-`EnemyQuery` adapter in `enemies/bosses/index.ts` withholds the boss entirely while
+   * this is true.
+   */
+  get invulnerable(): boolean {
+    return this.transitioning;
+  }
+
   /** Places the boss in the scene and starts phase 0. */
   spawn(scene: THREE.Scene, hullPoints: number, arenaRadius: number): void {
     this.maxHull = hullPoints;
@@ -171,6 +204,7 @@ export abstract class Boss {
   update(ctx: BossContext, dt: number): void {
     if (!this.alive) return;
     this.age += dt;
+    this.playerPosCache.copy(ctx.playerPos);
     if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 12);
 
     if (this.transitioning) {
@@ -320,9 +354,31 @@ function baseSpawn(ctx: BossContext, x: number, y: number, z: number, damage: nu
 }
 
 /**
- * A full ring in the plane perpendicular to `axis`, optionally with a missing wedge the player
- * can fly through. The travelling safe wedge is Hexard's core teaching tool: it forces the
- * player to read rotation rather than react.
+ * Builds an orthonormal basis (`outA`, `outB`) spanning the plane perpendicular to `axis`, with
+ * `axis === WORLD_UP` reproducing the historical X/Z basis exactly (`outA` = +X, `outB` = +Z) so
+ * every pre-existing horizontal-ring call site is bit-for-bit unaffected by this function
+ * existing. Non-default axes are what let a boss rotate its firing plane between volleys
+ * (playtester feedback #6: sector 1 and 3 bosses "only shoot along one plane").
+ */
+function ringBasis(axis: THREE.Vector3, outA: THREE.Vector3, outB: THREE.Vector3): void {
+  if (axis.x === 0 && axis.y === 1 && axis.z === 0) {
+    outA.set(1, 0, 0);
+    outB.set(0, 0, 1);
+    return;
+  }
+  // Any reference not parallel to axis; Z unless axis is already nearly axial to Z.
+  outA.set(0, 0, 1);
+  if (Math.abs(axis.z) > 0.95) outA.set(1, 0, 0);
+  outA.crossVectors(outA, axis).normalize();
+  outB.crossVectors(axis, outA).normalize();
+}
+
+/**
+ * A full ring in the plane perpendicular to `axis` (world-up by default, i.e. the historical
+ * horizontal ring), optionally with a missing wedge the player can fly through. The travelling
+ * safe wedge is Hexard's core teaching tool: it forces the player to read rotation rather than
+ * react. Passing a non-default `axis` tilts the whole ring — used to break bosses out of firing
+ * in a single plane without changing the gap-reading mechanic itself.
  */
 export function patternRing(
   ctx: BossContext,
@@ -334,15 +390,19 @@ export function patternRing(
   phaseOffset = 0,
   gapCenter = Infinity,
   gapWidth = 0,
+  axis: THREE.Vector3 = WORLD_UP,
 ): void {
+  ringBasis(axis, scratchVec3C, scratchVec3D);
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * TAU + phaseOffset;
     if (gapWidth > 0 && Number.isFinite(gapCenter) && angularDistance(angle, gapCenter) < gapWidth * 0.5) {
       continue;
     }
-    spawn.dx = Math.cos(angle);
-    spawn.dy = 0;
-    spawn.dz = Math.sin(angle);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    spawn.dx = scratchVec3C.x * cos + scratchVec3D.x * sin;
+    spawn.dy = scratchVec3C.y * cos + scratchVec3D.y * sin;
+    spawn.dz = scratchVec3C.z * cos + scratchVec3D.z * sin;
     baseSpawn(ctx, origin.x, origin.y, origin.z, damage, speed, colorIndex);
   }
 }
@@ -371,7 +431,13 @@ export function patternSphere(
   }
 }
 
-/** A cone of shots aimed at the player — the readable "this one is for you" volley. */
+/**
+ * A cone of shots aimed at the player — the readable "this one is for you" volley. `axisHint`
+ * picks which way the cone opens: world-up (default) spreads it left/right, a roughly-horizontal
+ * hint (e.g. the boss's own strafe axis) spreads it up/down instead. Alternating the hint across
+ * volleys is what stops a fan-heavy boss from reading as "everything happens in one plane"
+ * (playtester feedback #6).
+ */
 export function patternFan(
   ctx: BossContext,
   origin: THREE.Vector3,
@@ -381,10 +447,11 @@ export function patternFan(
   speed: number,
   damage: number,
   colorIndex: number,
+  axisHint: THREE.Vector3 = WORLD_UP,
 ): void {
   scratchVec3A.copy(target).sub(origin).normalize();
   // Build a perpendicular basis so the fan opens across the player's view, not into it.
-  scratchVec3B.set(0, 1, 0).cross(scratchVec3A).normalize();
+  scratchVec3B.copy(axisHint).cross(scratchVec3A).normalize();
 
   for (let i = 0; i < count; i++) {
     const t = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;

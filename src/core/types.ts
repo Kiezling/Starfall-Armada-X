@@ -252,8 +252,12 @@ export interface PlayerState {
   heat: number;
   /** True while venting after an overheat; primary fire is locked out. */
   venting: boolean;
+  /** Blink charge, 0..`PLAYER.boostMax`. Regenerates continuously; a blink spends `blinkCost`. */
   boost: number;
+  /** True for the duration of a blink. Drives the speed multiplier, the trail, and the engine. */
   boosting: boolean;
+  /** Seconds remaining in the current blink; <= 0 when not blinking. */
+  blinkTimer: number;
 
   driftTimer: number;
   driftCooldown: number;
@@ -485,6 +489,25 @@ export interface Settings {
 
   invertY: boolean;
   mouseSensitivity: number;
+
+  /**
+   * Throttle becomes a persistent setpoint that W/S ramp and then hold, instead of a key that
+   * must stay down to keep moving.
+   *
+   * This exists for key rollover. Most non-gaming keyboards are matrix-scanned with limited
+   * N-key rollover: past three or four simultaneous keys further presses are silently dropped,
+   * and the arrow cluster is a frequent casualty. Nothing in software can make the hardware
+   * report a key it never sent, so the only real fix is to need fewer keys held at once, and
+   * throttle is the key that would otherwise be held for an entire run. This is also the
+   * flight-sim convention (a throttle notch), so it costs nothing in feel.
+   *
+   * Fire and boost used to have matching toggle options for the same reason. They are gone:
+   * boost is now a tapped blink rather than a held drain (see `PLAYER.blinkDuration`), and
+   * overheat now actually latches, so sustained fire is bounded by heat rather than by how
+   * long a finger can stay on a key. Neither needs a toggle any more.
+   */
+  cruiseThrottle: boolean;
+
   /** Action name -> KeyboardEvent.code. */
   keybinds: Record<string, string>;
 
