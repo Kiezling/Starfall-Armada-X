@@ -31,14 +31,14 @@ import {
   type SecondaryWeaponId,
   type Settings,
 } from './core/types';
-import { ARENA, CAMERA, FEEL, LIMITS, PLAYER, RUN } from './core/constants';
+import { ARENA, CAMERA, FEEL, HAZARD, LIMITS, PLAYER, RUN } from './core/constants';
 import { TypedEventBus } from './core/events';
 import { GameClock } from './core/time';
 import { InputManager } from './core/input';
 import { loadSettings, saveSettings } from './core/settings';
 import { loadMeta } from './core/save';
 import { Rng, randomSeed } from './core/rng';
-import { clamp, clamp01, scratchVec3A, scratchVec3B, FORWARD } from './core/math';
+import { clamp, clamp01, scratchVec3A, scratchVec3B, scratchVec3C, scratchVec3D, FORWARD } from './core/math';
 
 import { RenderSystem } from './render/renderer';
 import { ChaseCamera } from './render/camera';
@@ -180,6 +180,18 @@ export class Game {
   private lockTracking = 0;
   /** Decays to 0 in updatePresentation; the renderer holds no decay of its own. */
   private damagePulse = 0;
+  /**
+   * Player position at the top of this simulate() step, snapshotted just before
+   * `flight.update` moves it. `checkAsteroidRam` sweeps from here to the post-flight position,
+   * so this has to be a persistent field rather than a borrow-and-discard scratch — it must
+   * survive across the flight/targeting/weapons block of the step, which is longer-lived than
+   * what the shared scratch pool's "never retained past a single synchronous block" contract
+   * allows.
+   */
+  private readonly prevPlayerPos = new THREE.Vector3();
+  /** Mirrors what was last handed to PlayerSystem.setEmpSuppressed, purely so the HUD view
+   * model can report it without re-querying the arena a second time each frame. */
+  private empSuppressed = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -203,6 +215,11 @@ export class Game {
     this.trails = new TrailSystem(this.render.scene, 64);
     this.impacts = new ImpactFX(this.render.scene, this.particles);
     this.shields = new ShieldFX(this.render.scene, 32);
+    // Late-bound: Arena is constructed before ImpactFX exists (rendering scaffolding goes in
+    // before the effects layer), so this couldn't be a constructor argument. Without this call
+    // asteroid destruction still works — damageAsteroid's ImpactFX calls are optional-chained
+    // — but silently, with no debris burst. See Arena.setImpactFX's doc comment.
+    this.arena.setImpactFX(this.impacts);
 
     // --- Input ---------------------------------------------------------------------------
     this.input = new InputManager(this.render.domElement, this.settings);
@@ -249,7 +266,19 @@ export class Game {
       blockedByTerrain: (fx, fy, fz, tx, ty, tz, radius) => {
         scratchVec3A.set(fx, fy, fz);
         scratchVec3B.set(tx, ty, tz);
-        return this.arena.raycastAsteroids(scratchVec3A, scratchVec3B, radius) >= 0;
+        const hit = this.arena.raycastAsteroids(scratchVec3A, scratchVec3B, radius);
+        if (hit < 0) return false;
+        // Sector 0's brief is explicit that cover "can be shot into the enemy" — a rock that
+        // merely blocks shots forever is not that. `blockedByTerrain` is called from
+        // ProjectileSystem.update for every projectile that terrain-blocks, player and enemy
+        // fire alike; the callback isn't told which team fired or what damage the shot carried
+        // (see CombatContext in combat/projectiles.ts), so this applies a flat
+        // HAZARD.rockShotDamage per blocked shot rather than scaling by the actual weapon.
+        // That means enemy fire chips rocks too, as a side effect of not touching
+        // projectiles.ts — see this pass's report for the precise interface change that would
+        // make it player-only and damage-accurate, if that's wanted.
+        this.arena.damageAsteroid(hit, HAZARD.rockShotDamage);
+        return true;
       },
       pullEnemies: (x, y, z, radius, strength, dt) => this.enemies.pull(x, y, z, radius, strength, dt),
     };
@@ -640,6 +669,12 @@ export class Game {
     this.enemyCtx.elapsed = this.clock.elapsed;
 
     if (player.alive) {
+      // Ion Storm: feed this step's field state in before PlayerSystem.update runs its shield
+      // step, which is what reads it. Queried off last step's position — one step of staleness
+      // at 60Hz, same as everything else here that reads `player.position` before this step's
+      // flight.update has moved it (targeting, aim assist).
+      this.empSuppressed = this.arena.isInEmpField(player.position);
+      this.playerSystem.setEmpSuppressed(this.empSuppressed);
       this.playerSystem.update(dt);
 
       // Targeting resolves *before* flight: the tracking assist steers toward the intercept
@@ -661,6 +696,7 @@ export class Game {
       const trackDir = this.resolveTrackDirection(player);
       player.hardLock = hardLock && trackDir !== null;
 
+      this.prevPlayerPos.copy(player.position);
       const result = this.flight.update(
         player,
         this.input,
@@ -673,6 +709,11 @@ export class Game {
       this.speedFraction = result.speedFraction;
       this.boundaryWarning = result.atBoundary;
       this.lockTracking = result.lockTracking;
+
+      // Debris Belt ramming: sweep this step's motion against the asteroid field now that
+      // flight has finished moving the player, so weapons/aim below fire from the corrected
+      // (post-collision) position rather than one that may still be inside a rock.
+      this.checkAsteroidRam(player);
 
       // Guns fire along the nose; the gimbal then traverses the shot onto the locked target's
       // intercept point when it is inside the mount's envelope, and the assist cone bends it
@@ -750,6 +791,58 @@ export class Game {
     }
 
     this.input.endStep();
+  }
+
+  /**
+   * Debris Belt ramming: sweeps `prevPlayerPos` -> `player.position` against the asteroid
+   * field. A hit always corrects position and velocity (so the ship can never end a step
+   * embedded in or tunnelled through a rock, regardless of speed or invulnerability); damage,
+   * hit-stop, and camera trauma only happen above `HAZARD.ramMinSpeed` and outside the
+   * existing invulnerability window, so a graze doesn't chain-hit every frame. Damage routes
+   * through `PlayerSystem.takeDamage`, which is what emits `player:damaged` — this deliberately
+   * produces the exact same hit-stop/trauma/shield-ripple feedback a weapon hit does (see the
+   * `player:damaged` handler in `bindEvents`) rather than a bespoke ramming FX path.
+   */
+  private checkAsteroidRam(player: PlayerState): void {
+    const hit = this.arena.raycastAsteroids(this.prevPlayerPos, player.position, HAZARD.playerRamRadius);
+    if (hit < 0) return;
+
+    const rockRadius = this.arena.getAsteroid(hit, scratchVec3C);
+    if (rockRadius <= 0) return; // Rock died between the sweep and this read; nothing to hit.
+
+    // Unit normal from the rock's centre to the player. Doubles as the surface push-out
+    // direction and the "impact came from here" direction `takeDamage` wants (mirrors how
+    // ProjectileSystem.collideEnemyShot builds the same kind of vector for a weapon hit).
+    scratchVec3D.copy(player.position).sub(scratchVec3C);
+    let dist = scratchVec3D.length();
+    if (dist < 1e-4) {
+      scratchVec3D.set(0, 1, 0);
+      dist = 1;
+    }
+    scratchVec3D.multiplyScalar(1 / dist);
+
+    // Speed of approach along the normal *before* the correction below touches velocity — the
+    // number the damage arithmetic and the minimum-speed gate are measured against.
+    const closingSpeed = Math.max(0, -player.velocity.dot(scratchVec3D));
+    const pushDist = rockRadius + HAZARD.playerRamRadius + 0.05;
+
+    // Only snap the position back if the player is still actually inside the rock's surface at
+    // the end of this step — a fast pass that merely clipped the rock mid-sweep but is already
+    // clear by frame's end should not be yanked backward.
+    if (dist < pushDist) {
+      player.position.copy(scratchVec3C).addScaledVector(scratchVec3D, pushDist);
+    }
+    // Kill the inward velocity component and add a small outward nudge (HAZARD.ramBounce) so
+    // the ship visibly separates instead of reading as merely stopped dead against the rock.
+    if (closingSpeed > 0) {
+      player.velocity.addScaledVector(scratchVec3D, closingSpeed * (1 + HAZARD.ramBounce));
+    }
+
+    if (closingSpeed < HAZARD.ramMinSpeed || player.invuln > 0) return;
+
+    const over = closingSpeed - HAZARD.ramMinSpeed;
+    this.playerSystem.takeDamage(over * HAZARD.ramDamagePerSpeed, scratchVec3D.x, scratchVec3D.y, scratchVec3D.z);
+    this.arena.damageAsteroid(hit, over * HAZARD.ramDamagePerSpeedToRock);
   }
 
   /** Time Dilation Core: flying close to enemy fire slows the world briefly. */
@@ -1132,6 +1225,7 @@ export class Game {
     driftReady: true, driftCooldownFraction: 0,
     boundaryWarning: 0,
     lowHull: false,
+    empSuppressed: false,
   };
 
   private buildHudViewModel(hullFraction: number): HudViewModel {
@@ -1162,6 +1256,7 @@ export class Game {
     vm.driftCooldownFraction = clamp01(player.driftCooldown / Math.max(0.001, player.def.driftCooldown || PLAYER.driftCooldown));
     vm.boundaryWarning = this.boundaryWarning;
     vm.lowHull = hullFraction < 0.25;
+    vm.empSuppressed = this.empSuppressed;
 
     return vm;
   }

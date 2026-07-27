@@ -15,6 +15,18 @@ import { PLAYER } from '../core/constants';
 const BASE_MAX_HULL = 100;
 const BASE_MAX_SHIELD = 50;
 const BASE_SHIELD_REGEN = 12;
+/**
+ * Out-of-combat hull regeneration, in hull points per second.
+ *
+ * Sized against the attrition problem it exists to solve, not against combat throughput: the
+ * hull only fully repaired after a boss, i.e. once every seven encounters, so chip damage taken
+ * in encounter 1 was still being carried into the boss six fights later. At 1.2/s, the ~12s of
+ * downtime between waves returns ~14 hull — 14% of BASE_MAX_HULL. That is enough to erase the
+ * cost of a couple of glancing hits per wave and no more; a fight that goes badly still leaves
+ * a wound that lasts the sector. Gated on the same shieldDelay window as shields, so it never
+ * ticks while anything is shooting at you.
+ */
+const BASE_HULL_REGEN = 1.2;
 /** Linear acceleration in world units/s^2. Not modelled in PLAYER (flight.ts owns the curve),
  * so the baseline lives here and hulls scale it in lockstep with top speed. */
 const BASE_ACCELERATION = 60;
@@ -29,6 +41,7 @@ export const HULLS: Readonly<Record<HullId, HullDef>> = {
     maxShield: BASE_MAX_SHIELD,
     shieldDelay: PLAYER.shieldDelay,
     shieldRegen: BASE_SHIELD_REGEN,
+    hullRegen: BASE_HULL_REGEN,
     maxSpeed: PLAYER.baseSpeed,
     acceleration: BASE_ACCELERATION,
     turnRate: PLAYER.baseTurnRate,
@@ -46,7 +59,10 @@ export const HULLS: Readonly<Record<HullId, HullDef>> = {
     maxHull: Math.round(BASE_MAX_HULL * 0.6),
     maxShield: BASE_MAX_SHIELD,
     shieldDelay: PLAYER.shieldDelay,
+    // Glass cannon: the hull it does have is not supposed to come back. Vireo's answer to
+    // damage is not being there for it, so it regenerates at a third of baseline.
     shieldRegen: BASE_SHIELD_REGEN,
+    hullRegen: BASE_HULL_REGEN / 3,
     maxSpeed: Math.round(PLAYER.baseSpeed * 1.4),
     acceleration: Math.round(BASE_ACCELERATION * 1.4),
     turnRate: PLAYER.baseTurnRate * 1.4,
@@ -67,6 +83,10 @@ export const HULLS: Readonly<Record<HullId, HullDef>> = {
     // still reads as a punishing event — it just recovers faster than the other hulls.
     shieldDelay: 0.8,
     shieldRegen: BASE_SHIELD_REGEN,
+    // Doubles down on the hull's existing identity — it is the one that survives attrition, so
+    // it is the one whose plating comes back fastest. 2x baseline on 1.8x max hull still means
+    // a full heal from empty takes ~75s of uninterrupted downtime, which never happens.
+    hullRegen: BASE_HULL_REGEN * 2,
     maxSpeed: Math.round(PLAYER.baseSpeed * 0.75),
     acceleration: Math.round(BASE_ACCELERATION * 0.75),
     turnRate: PLAYER.baseTurnRate,
@@ -86,6 +106,7 @@ export const HULLS: Readonly<Record<HullId, HullDef>> = {
     maxShield: BASE_MAX_SHIELD,
     shieldDelay: PLAYER.shieldDelay,
     shieldRegen: BASE_SHIELD_REGEN,
+    hullRegen: BASE_HULL_REGEN,
     maxSpeed: PLAYER.baseSpeed,
     acceleration: BASE_ACCELERATION,
     turnRate: PLAYER.baseTurnRate,

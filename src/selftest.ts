@@ -34,10 +34,11 @@ import type { InputAction, InputState } from './core/types';
 import { TargetingSystem } from './combat/targeting';
 import type { EnemyQuery } from './combat/projectiles';
 import { ProjectileSystem } from './combat/projectiles';
-import { PLAYER } from './core/constants';
+import { HAZARD, PLAYER } from './core/constants';
 import { TypedEventBus } from './core/events';
 import { BossEncounter, CombinedEnemyQuery, type BossContext } from './enemies/bosses';
 import { Hexard } from './enemies/bosses/hexard';
+import { Arena } from './render/arena';
 
 export interface TestResult {
   name: string;
@@ -1265,6 +1266,248 @@ function testHexardAddGating(): void {
   );
 }
 
+/**
+ * Batch B, mechanic 1: Debris Belt ramming/shooting. `game.ts`'s `checkAsteroidRam` and the
+ * `blockedByTerrain` shot-damage wiring both sit on top of `Arena`'s collision/damage API plus
+ * `PlayerSystem.takeDamage` and the `HAZARD` constants — Game itself needs a live DOM container
+ * and can't run headlessly, so this exercises exactly that combination directly rather than
+ * only the sweep test that used to gate it (raycastAsteroids has had a caller — enemy-fire
+ * terrain blocking — since before this pass; what was missing was anything that turned a hit
+ * into damage on either side).
+ */
+function testAsteroidRamming(): void {
+  const scene = new THREE.Scene();
+  const arena = new Arena(scene, 777);
+
+  // Every rock is alive immediately after construction, so index 0 is a stable, deterministic
+  // target rather than something that needs to be searched for.
+  const rockPos = new THREE.Vector3();
+  const rockRadius = arena.getAsteroid(0, rockPos);
+  check('arena seeds a live asteroid at index 0', rockRadius > 0, `radius=${rockRadius}`);
+
+  // A short straight-line sweep centred on the rock, well outside it on both ends, must find it.
+  const axis = new THREE.Vector3(1, 0, 0);
+  const from = rockPos.clone().addScaledVector(axis, rockRadius + 40);
+  const to = rockPos.clone().addScaledVector(axis, -(rockRadius + 40));
+  const hit = arena.raycastAsteroids(from, to, HAZARD.playerRamRadius);
+  check('raycastAsteroids finds a rock the sweep passes through', hit === 0, `hit=${hit}`);
+
+  // A sweep nowhere near the field (the shell tops out at 0.82 * ARENA.radius) must miss clean.
+  const clearFrom = new THREE.Vector3(0, 5000, 0);
+  const clearTo = new THREE.Vector3(10, 5000, 0);
+  check(
+    'raycastAsteroids reports no hit for a sweep nowhere near the field',
+    arena.raycastAsteroids(clearFrom, clearTo, HAZARD.playerRamRadius) < 0,
+  );
+
+  // Replicate checkAsteroidRam's arithmetic for a full-boost-speed impact (see HAZARD's doc
+  // comments for the same numbers) and confirm it damages both sides through the real APIs.
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+  const hullBefore = player.hull;
+
+  const closingSpeed = PLAYER.baseSpeed * 1.85; // full boost, per HAZARD.ramDamagePerSpeed's comment
+  const over = closingSpeed - HAZARD.ramMinSpeed;
+  const dealt = playerSystem.takeDamage(over * HAZARD.ramDamagePerSpeed, 1, 0, 0);
+  check(
+    'a full-speed ram deals real, bounded hull damage to the player',
+    dealt > 0 && dealt < player.stats.maxHull && player.hull < hullBefore,
+    `dealt=${dealt.toFixed(1)}, hull ${hullBefore} -> ${player.hull.toFixed(1)}`,
+  );
+
+  let rockKilled = false;
+  let hits = 0;
+  while (!rockKilled && hits < 20) {
+    rockKilled = arena.damageAsteroid(0, over * HAZARD.ramDamagePerSpeedToRock);
+    hits++;
+  }
+  check('repeated ram-scale hits eventually destroy the rock', rockKilled, `took ${hits} hit(s)`);
+  check(
+    'a destroyed rock is no longer a live collider',
+    arena.getAsteroid(0, rockPos) === 0,
+    `radius after death=${arena.getAsteroid(0, rockPos)}`,
+  );
+
+  arena.dispose();
+}
+
+/**
+ * Batch B, mechanic 2: Ion Storm EMP suppression. While `PlayerSystem.setEmpSuppressed(true)`
+ * is in effect, shield regen must stop entirely and any remaining charge must drain toward zero
+ * at `PLAYER.empShieldDrainRate` (a bleed, not an instant zero-out — see that constant's doc
+ * comment), then normal regen must resume the instant suppression lifts.
+ */
+function testEmpSuppression(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  // Partial shield, long out of combat — absent suppression this would be regenerating.
+  player.shield = player.stats.maxShield * 0.5;
+  player.timeSinceDamage = 999;
+
+  playerSystem.setEmpSuppressed(true);
+  const beforeDrain = player.shield;
+  playerSystem.update(1 / 60);
+  const expectedDrop = PLAYER.empShieldDrainRate * (1 / 60);
+  check(
+    'shield regen is suppressed and existing charge drains at empShieldDrainRate, not instantly',
+    player.shield > 0 && Math.abs(beforeDrain - player.shield - expectedDrop) < 1e-6,
+    `shield ${beforeDrain.toFixed(3)} -> ${player.shield.toFixed(3)} (expected drop ${expectedDrop.toFixed(4)})`,
+  );
+
+  // Keep draining to zero and confirm the "shields just hit zero" signal fires exactly once at
+  // the crossing (see PlayerSystem.updateShield's comment for why this reuses shieldBreak).
+  let breaks = 0;
+  events.on('player:shieldBreak', () => {
+    breaks++;
+  });
+  let steps = 0;
+  while (player.shield > 0 && steps < 6000) {
+    playerSystem.update(1 / 60);
+    steps++;
+  }
+  check('sustained EMP exposure drains the shield fully to zero', player.shield === 0, `steps=${steps}`);
+  check('the drain-to-zero fires exactly one shieldBreak signal', breaks === 1, `breaks=${breaks}`);
+
+  // Lift suppression: regen must resume immediately (timeSinceDamage is still well past
+  // shieldDelay), rather than staying latched off.
+  playerSystem.setEmpSuppressed(false);
+  const beforeRegen = player.shield;
+  playerSystem.update(1 / 60);
+  check(
+    'shield regen resumes the instant EMP suppression lifts',
+    player.shield > beforeRegen,
+    `shield ${beforeRegen.toFixed(3)} -> ${player.shield.toFixed(3)}`,
+  );
+}
+
+/**
+ * Hull regeneration exists to stop a run dying of a thousand chip hits between bosses, so the
+ * properties that matter are: it is gated on the same out-of-combat window shields use, it is
+ * slow enough that it never trivialises a bad fight, and — the one that is easy to get wrong —
+ * it keeps running inside an EMP front, because the Ion Storm's advertised rule is about
+ * shields and a silent second penalty on hull would be a rule the player was never told.
+ */
+function testHullRegen(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  player.hull = player.stats.maxHull * 0.5;
+
+  // In combat (inside shieldDelay): nothing should come back.
+  player.timeSinceDamage = 0;
+  const inCombat = player.hull;
+  playerSystem.update(1 / 60);
+  check(
+    'hull does not regenerate while still in combat',
+    player.hull === inCombat,
+    `hull ${inCombat.toFixed(3)} -> ${player.hull.toFixed(3)}`,
+  );
+
+  // Out of combat: it ticks at exactly def.hullRegen * stats.hullRegenMult.
+  player.timeSinceDamage = 999;
+  const before = player.hull;
+  playerSystem.update(1 / 60);
+  const expected = player.def.hullRegen * player.stats.hullRegenMult * (1 / 60);
+  check(
+    'hull regenerates out of combat at hullRegen * hullRegenMult',
+    Math.abs(player.hull - before - expected) < 1e-6,
+    `hull ${before.toFixed(4)} -> ${player.hull.toFixed(4)} (expected +${expected.toFixed(5)})`,
+  );
+
+  // It must never overshoot the cap.
+  player.hull = player.stats.maxHull - 0.001;
+  for (let i = 0; i < 120; i++) playerSystem.update(1 / 60);
+  check(
+    'hull regeneration never exceeds max hull',
+    player.hull === player.stats.maxHull,
+    `hull=${player.hull.toFixed(4)} max=${player.stats.maxHull.toFixed(4)}`,
+  );
+
+  // EMP suppression is a shield rule, not a hull rule.
+  player.hull = player.stats.maxHull * 0.5;
+  player.timeSinceDamage = 999;
+  playerSystem.setEmpSuppressed(true);
+  const beforeEmp = player.hull;
+  playerSystem.update(1 / 60);
+  check(
+    'hull still regenerates inside an EMP front — suppression only governs shields',
+    player.hull > beforeEmp,
+    `hull ${beforeEmp.toFixed(4)} -> ${player.hull.toFixed(4)}`,
+  );
+  playerSystem.setEmpSuppressed(false);
+
+  // A hull that opts out of regeneration stays opted out however the stats stack.
+  const vireo = createPlayerState({
+    hullId: 'vireo',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  check(
+    'every hull declares a non-negative hullRegen, and Bastion out-repairs Vireo',
+    vireo.def.hullRegen >= 0 && vireo.def.hullRegen < player.def.hullRegen,
+    `vireo=${vireo.def.hullRegen} starfall=${player.def.hullRegen}`,
+  );
+}
+
+/**
+ * `player:empSuppressed` drives a latched HUD class, so it must be edge-triggered: one event on
+ * entering a front, one on leaving, and nothing at all for the many steps spent inside one.
+ * A level-triggered version would turn two DOM toggles into a redraw every frame.
+ */
+function testEmpEventIsEdgeTriggered(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  let active = 0;
+  let inactive = 0;
+  events.on('player:empSuppressed', (e) => {
+    if (e.active) active++;
+    else inactive++;
+  });
+
+  // Ten steps inside a front, driven the way game.ts drives it: unconditionally, every step.
+  for (let i = 0; i < 10; i++) playerSystem.setEmpSuppressed(true);
+  check(
+    'entering an EMP front emits exactly one suppression event, not one per step',
+    active === 1 && inactive === 0,
+    `active=${active} inactive=${inactive}`,
+  );
+
+  for (let i = 0; i < 10; i++) playerSystem.setEmpSuppressed(false);
+  check(
+    'leaving an EMP front emits exactly one release event',
+    active === 1 && inactive === 1,
+    `active=${active} inactive=${inactive}`,
+  );
+}
+
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -1291,5 +1534,9 @@ export function runSelfTest(): TestResult[] {
   testLockAcquisitionDecaysWhenLookingAway();
   testBossLockOnAndHitboxes();
   testHexardAddGating();
+  testAsteroidRamming();
+  testEmpSuppression();
+  testHullRegen();
+  testEmpEventIsEdgeTriggered();
   return results;
 }

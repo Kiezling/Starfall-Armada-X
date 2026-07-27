@@ -33,6 +33,8 @@ const SILHOUETTE: Record<EnemyTypeId, string> = {
   bulwark: 'Wide, plated, front-heavy.',
   carrier: 'Bulky, hangar-lit.',
   mineLayer: 'Segmented, blinking.',
+  mortar: 'Squat drum base, canted barrel, splayed legs.',
+  warden: 'Round hull, radiating paddles, a standing halo.',
 };
 const BEHAVIOR: Record<EnemyTypeId, string> = {
   waspDrone: 'Swarms and closes for kamikaze arcs.',
@@ -41,6 +43,8 @@ const BEHAVIOR: Record<EnemyTypeId, string> = {
   bulwark: 'Advances slowly behind a frontal shield arc.',
   carrier: 'Spawns Wasp Drones continuously.',
   mineLayer: 'Drops persistent proximity mines.',
+  mortar: 'Kites at extreme range; a 1.2s telegraph drops a shell on your position.',
+  warden: 'Hangs back near its escort, restoring their shields. Weak point-defence only.',
 };
 const COUNTER: Record<EnemyTypeId, string> = {
   waspDrone: 'Any AoE clears them fast — don’t get surrounded.',
@@ -49,6 +53,8 @@ const COUNTER: Record<EnemyTypeId, string> = {
   bulwark: 'Flank it — the rear is unarmoured. The front shield arc reduces damage hard.',
   carrier: 'Priority target. Every second it lives is more Wasps in the fight.',
   mineLayer: 'Range it down; don’t chase it through its own minefield.',
+  mortar: 'Keep moving — a shell that lands on empty ground is wasted, but it leaves a live mine behind, so don’t keep returning to the same spot.',
+  warden: 'Priority target. Its aura outheals anything you break down while it’s still alive.',
 };
 
 /**

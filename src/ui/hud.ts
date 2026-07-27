@@ -41,6 +41,13 @@ export interface HudViewModel {
   driftCooldownFraction: number;
   boundaryWarning: number; // 0..1
   lowHull: boolean;
+  /**
+   * True while the player sits inside an Ion Storm EMP front. The shield bar is otherwise
+   * indistinguishable from "took a hit recently and is waiting out shieldDelay", and those two
+   * states want opposite responses from the player — wait vs. leave — so the HUD has to name
+   * which one it is.
+   */
+  empSuppressed: boolean;
 }
 
 export interface TargetView {
@@ -111,6 +118,7 @@ export class Hud {
   private readonly hullStat: HTMLDivElement;
   private readonly hullFill: HTMLDivElement;
   private readonly hullValueEl: HTMLSpanElement;
+  private readonly shieldStat: HTMLDivElement;
   private readonly shieldFill: HTMLDivElement;
   private readonly shieldValueEl: HTMLSpanElement;
   private readonly heatStat: HTMLDivElement;
@@ -205,9 +213,9 @@ export class Hud {
     this.hullFill = this.buildBarStat(this.hullStat, 'Hull');
     this.hullValueEl = this.hullStat.querySelector<HTMLSpanElement>('.hud-stat-value')!;
 
-    const shieldStat = make('div', 'hud-stat hud-bar--shield', vitals);
-    this.shieldFill = this.buildBarStat(shieldStat, 'Shield');
-    this.shieldValueEl = shieldStat.querySelector<HTMLSpanElement>('.hud-stat-value')!;
+    this.shieldStat = make('div', 'hud-stat hud-bar--shield', vitals);
+    this.shieldFill = this.buildBarStat(this.shieldStat, 'Shield');
+    this.shieldValueEl = this.shieldStat.querySelector<HTMLSpanElement>('.hud-stat-value')!;
 
     this.heatStat = make('div', 'hud-stat hud-bar--heat', vitals);
     this.heatFill = this.buildBarStat(this.heatStat, 'Heat');
@@ -360,6 +368,9 @@ export class Hud {
 
     this.setFraction(this.shieldFill, 'shieldFrac', vm.shieldFraction);
     this.setText(this.shieldValueEl, 'shieldText', `${Math.round(vm.shieldValue)}`);
+    if (this.changed('empSuppressed', vm.empSuppressed)) {
+      this.shieldStat.classList.toggle('hud-stat--emp', vm.empSuppressed);
+    }
 
     this.setFraction(this.heatFill, 'heatFrac', vm.heatFraction);
     this.setText(this.heatValueEl, 'heatText', `${Math.round(vm.heatFraction * 100)}%`);

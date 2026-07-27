@@ -74,7 +74,12 @@ const AURA_SCALE = 1.7;
 const AURA_SPIN_SPEED = 1.3;
 
 /** Projectile speed per archetype. Not part of `EnemyDef` because it is a rendering/feel
- * concern of the shot itself, not a stat that scales with sector/threat power. */
+ * concern of the shot itself, not a stat that scales with sector/threat power.
+ *
+ * `mortar` never sets `wantsFire` (see ai.ts's `mortarBrain` — its only attack is the placed
+ * mine handled below via `wantsSpecial`), so this entry is never actually read; it exists only
+ * because `PROJECTILE_SPEED` is keyed by every `EnemyTypeId` and a plausible value costs nothing
+ * to keep here in case a direct-fire mode is ever added. */
 const PROJECTILE_SPEED: Readonly<Record<EnemyTypeId, number>> = {
   waspDrone: 90,
   interceptor: 150,
@@ -82,9 +87,27 @@ const PROJECTILE_SPEED: Readonly<Record<EnemyTypeId, number>> = {
   bulwark: 105,
   carrier: 100,
   mineLayer: 95,
+  mortar: 90,
+  warden: 80,
 };
 
 const PROJECTILE_RADIUS = 1.1;
+
+/**
+ * How far a Warden's shield-regen aura reaches, and how much shield/second it restores to each
+ * ally inside it. This runs its own `SpatialGrid` query (via `applyWardenAura`) rather than
+ * reusing the AI neighbour buffer bound for `separate()`/`cohere()` each iteration, so its
+ * radius is chosen independently of `NEIGHBOR_QUERY_RADIUS` — "how far the aura visibly
+ * protects" matters more here than saving one query.
+ *
+ * 12/s fully restores an Interceptor's 20 shield in 1.7s and a Bulwark's 60 in 5s (see
+ * `ENEMY_DEFS` in enemies/types.ts) — fast enough that a shielded escort effectively cannot be
+ * broken down while its Warden lives, which is the entire point of making the Warden the
+ * priority target, but not so fast that it out-heals sustained multi-weapon focus fire, which
+ * would make an escorted group uncounterable rather than merely a detour.
+ */
+const WARDEN_AURA_RADIUS = 70;
+const WARDEN_AURA_REGEN = 12;
 
 /** Unit scale reused for every instance matrix compose — enemies do not stretch, so this is a
  * shared constant rather than a fresh vector per instance. */
@@ -454,6 +477,11 @@ export class EnemyManager implements EnemyQuery {
 
       if (this.intent.wantsSpecial) this.handleSpecial(e);
 
+      // Continuous, not event-driven like the spawns/mines above — a Warden buffs every live
+      // ally within range every step it is alive, which is what makes "kill it first" a real
+      // pressure rather than something a player can safely postpone.
+      if (e.typeId === 'warden') this.applyWardenAura(e, dt);
+
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt / FEEL.hitFlashDecay);
     }
 
@@ -493,6 +521,27 @@ export class EnemyManager implements EnemyQuery {
     this.projectiles.spawn(p);
   }
 
+  /** Tops up shield on every live ally (never itself) within `WARDEN_AURA_RADIUS`, capped at
+   * that ally's own `maxShield`. Zero allocation: `this.chainQueryBuffer` is the same
+   * pre-allocated `Int32Array` `chainReactionBurst`/`pull` already use, safe to reuse here
+   * because nothing else touches it mid-frame during `update()`'s own enemy loop. */
+  private applyWardenAura(warden: Enemy, dt: number): void {
+    const count = this.grid.query(
+      warden.position.x,
+      warden.position.y,
+      warden.position.z,
+      WARDEN_AURA_RADIUS,
+      this.chainQueryBuffer,
+    );
+    const restore = WARDEN_AURA_REGEN * dt;
+    for (let i = 0; i < count; i++) {
+      const ally = this.bySlot[this.chainQueryBuffer[i]!];
+      if (!ally || !ally.active || ally === warden || ally.maxShield <= 0) continue;
+      if (ally.shield >= ally.maxShield) continue;
+      ally.shield = Math.min(ally.maxShield, ally.shield + restore);
+    }
+  }
+
   private handleSpecial(enemy: Enemy): void {
     if (enemy.typeId === 'carrier') {
       randomOnSphere(scratchVec3B, this.randFn);
@@ -520,6 +569,39 @@ export class EnemyManager implements EnemyQuery {
       p.targetId = -1;
       p.proximity = 14;
       p.aoe = 42;
+      p.colorIndex = ENEMY_ORDER.indexOf(enemy.typeId);
+      p.scale = enemy.isElite ? 1.3 : 1.0;
+      p.sourceWeapon = 'enemy';
+      this.projectiles.spawn(p);
+    } else if (enemy.typeId === 'mortar') {
+      // Placed at the *player's* current position, not the Mortar's own — this is an artillery
+      // shell, not a dropped mine, and that distinction is the entire counter (ai.ts's
+      // mortarBrain: "move during the telegraph and the shell lands on empty ground"). Reads
+      // `this.aiCtx.playerPos` directly rather than threading a target through `AiIntent`
+      // because it is already the same up-to-date reference `update()` refreshed this frame.
+      const p = this.spawnParams;
+      p.kind = ProjectileKind.Mine;
+      p.team = Team.Enemy;
+      p.ownerId = enemy.id;
+      p.x = this.aiCtx.playerPos.x;
+      p.y = this.aiCtx.playerPos.y;
+      p.z = this.aiCtx.playerPos.z;
+      p.dx = 0;
+      p.dy = 0;
+      p.dz = 0;
+      p.speed = 0;
+      p.damage = currentDamage(enemy) * 1.3;
+      p.radius = 2.4;
+      // Long past `fireInterval` on purpose: a dodged shell should still leave the ground it
+      // landed on dangerous for a while, which is what turns "camp two favourite spots" into a
+      // losing strategy over the course of a wave rather than just this one shot.
+      p.life = 16;
+      p.pierce = 0;
+      p.fork = 0;
+      p.homingRate = 0;
+      p.targetId = -1;
+      p.proximity = 9;
+      p.aoe = 30;
       p.colorIndex = ENEMY_ORDER.indexOf(enemy.typeId);
       p.scale = enemy.isElite ? 1.3 : 1.0;
       p.sourceWeapon = 'enemy';
