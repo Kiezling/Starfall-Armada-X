@@ -633,9 +633,47 @@ export class EnemyManager implements EnemyQuery {
     return this.grid.query(x, y, z, radius, out);
   }
 
+  /**
+   * Resolves a *permanent slot identity* (i.e. `Enemy.index`, the value the spatial grid stores
+   * and hands back from `queryNear`) to its Enemy. This is the only correct way to turn a grid
+   * query result back into an entity — callers that instead loop a raw ordinal `0..liveCount`
+   * through here get garbage, because `bySlot[k]` is not "the k-th live enemy," it's "whichever
+   * enemy currently occupies permanent slot k," and slot occupancy has nothing to do with how
+   * many enemies happen to be alive right now. See `getLiveByOrdinal` for that other case.
+   */
   getByIndex(i: number): Enemy | null {
     const e = this.bySlot[i];
     return e && e.active ? e : null;
+  }
+
+  /**
+   * Resolves an *ordinal* in `[0, liveCount)` — "the i-th currently-live enemy, in no particular
+   * order" — to its Enemy. Use this for "walk every live enemy" callers (the HUD radar / off-
+   * screen-arrow feed is the one that needs it); use `getByIndex` for spatial-grid query results.
+   *
+   * This works because `Pool<Enemy>` keeps its live objects packed into the dense prefix
+   * `items[0, size)` (see core/pool.ts) — unlike `bySlot`, that prefix is exactly "every enemy
+   * that is currently alive," so an ordinal in `[0, liveCount)` is a real live enemy, not a
+   * permanent-identity slot that happens to be empty right now.
+   *
+   * Mixing this up with `getByIndex` was the actual bug behind three separate playtester reports
+   * that looked unrelated: enemies missing from the minimap, the Hostiles counter never quite
+   * matching what was on screen, and enemies that felt "un-lockable." The HUD used to drive its
+   * radar/arrow loop with `getByIndex(i)` for `i` in `[0, liveCount)` — i.e. by permanent slot
+   * identity, not live rank. Once a wave has spawned and killed a few enemies, a slot's identity
+   * has nothing to do with whether it's currently occupied, so most of `[0, liveCount)` resolved
+   * to *dead* slots (silently skipped, `meta` came back null) while genuinely live enemies sitting
+   * in higher-numbered permanent slots were never visited at all — dropped from the radar and the
+   * off-screen arrows without ever showing up as "missing" in any obvious way. Target lock itself
+   * was never affected (`targeting.ts` always resolves grid-query results through `getByIndex`,
+   * which is the correct call for that data), but a target the player could never see on the
+   * radar or an off-screen arrow reads as "un-lockable" even when `TAB`-cycling could still reach
+   * it. The Hostiles counter (`WaveDirector.enemiesRemaining`) was already correct — it never used
+   * this indexing at all — but a player who can't find the enemies it says are still out there
+   * understandably reads the number itself as the thing that's wrong.
+   */
+  getLiveByOrdinal(i: number): Enemy | null {
+    return i >= 0 && i < this.enemyPool.size ? this.enemyPool.items[i]! : null;
   }
 
   getById(id: number): Enemy | null {

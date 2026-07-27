@@ -283,7 +283,13 @@ export class Game {
     this.targetView = {
       count: 0,
       get: (i, outPos) => {
-        const enemy = this.enemies.getByIndex(i);
+        // `i` here is a plain ordinal over `[0, count)` (see the loop in hud.ts's
+        // `updateTracking`), not a permanent enemy-pool slot identity — `getByIndex` expects the
+        // latter (it's what spatial-grid queries return) and silently drops or mis-resolves most
+        // of the roster once a few enemies have spawned and died, which was the actual cause of
+        // enemies going missing from the minimap/off-screen arrows. `getLiveByOrdinal` is the
+        // pool-ordinal-safe counterpart — see its doc comment in enemies/manager.ts.
+        const enemy = this.enemies.getLiveByOrdinal(i);
         if (!enemy) return null;
         outPos.copy(enemy.position);
         return {
@@ -794,9 +800,17 @@ export class Game {
       this.arena.setSector(this.run.sector);
       this.starfield.setSector(this.run.sector);
       music.setSector(this.run.sector);
-      this.menus.showSectorClear(this.run.sector, cleared.name, 2.5);
       this.events.emit('sector:cleared', { sector: cleared.index });
       playSfx('sectorClear', 1);
+      // The sector-clear card is a modal beat, not a toast fired alongside the draft: it sits at
+      // a higher z-index than the draft screen (styles.css), so showing both at once means the
+      // card blocks every augment pick underneath it. `openDraft` is therefore the card's
+      // *dismissal* callback, not a follow-on call — the draft cannot open until the card has
+      // actually hidden itself (auto-hide timer or an early Escape/Enter), which also guarantees
+      // the card never survives to be seen stuck over the next encounter. See menus.ts's
+      // `showSectorClear` doc comment for the bug this replaced.
+      this.menus.showSectorClear(this.run.sector, cleared.name, this.run.time, () => this.openDraft());
+      return;
     }
 
     this.openDraft();

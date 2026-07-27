@@ -66,17 +66,6 @@ const SECONDARY_PIP_MAX = 6;
 const BOSS_SEGMENT_MAX = 8;
 const LEAD_PIP_TIME = 0.28;
 
-/** Attitude ladder: half-width of the sampled horizon arc, in radians, and its sample count. */
-const ATTITUDE_SPAN = 1.05;
-const ATTITUDE_SEGMENTS = 24;
-const ATTITUDE_FONT = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-/**
- * Pixels below screen centre for the heading/pitch readout. Clear of the ship model, which the
- * chase camera parks a little below centre — text over the hull is unreadable against a moving
- * mesh and hides the very thing the player is watching.
- */
-const ATTITUDE_READOUT_OFFSET = 152;
-
 /** Nose-crosshair geometry: pixels from centre to the start of a tick, and the tick's length. */
 const CROSSHAIR_GAP = 9;
 const CROSSHAIR_TICK = 7;
@@ -194,14 +183,6 @@ export class Hud {
   private readonly scratchToTarget = new THREE.Vector3();
   private readonly scratchNdc = new THREE.Vector3();
   private readonly lockedWorldPos = new THREE.Vector3();
-  /* Attitude reference: the ship's transform for this frame, kept so drawOverlay can build the
-   * horizon ladder without threading it through another argument. */
-  private readonly playerWorldPos = new THREE.Vector3();
-  private readonly playerQuat = new THREE.Quaternion();
-  private readonly attForward = new THREE.Vector3();
-  private readonly attHorizForward = new THREE.Vector3();
-  private readonly attHorizRight = new THREE.Vector3();
-  private readonly attPoint = new THREE.Vector3();
 
   /* Lead-pip estimation: we are not handed target velocity, so the lead pip is derived from the
    * locked target's own frame-to-frame screen motion — a legible approximation that needs no
@@ -450,8 +431,6 @@ export class Hud {
     }
 
     this.drawRadarBackground();
-    this.playerWorldPos.copy(playerPos);
-    this.playerQuat.copy(playerQuat);
     this.scratchInvQuat.copy(playerQuat).invert();
     camera.getWorldDirection(this.scratchCamForward);
 
@@ -683,127 +662,6 @@ export class Hud {
    * is what makes the tracking assist legible: the player can see the nose being walked onto
    * the lead point instead of the ship just mysteriously turning.
    */
-  /**
-   * The attitude reference: a true-horizon ladder, a zenith/nadir marker, and a heading/pitch
-   * readout.
-   *
-   * With the pitch limit gone the ship can loop and fly inverted, and an arena of stars gives
-   * the eye no absolute reference — "I have no clue what true direction I am facing" is the
-   * exact failure mode this exists to prevent. Everything here is derived from world axes, so
-   * it stays honest however the ship is oriented:
-   *
-   *   - the ladder is a real world-space circle at the ship's altitude, projected through the
-   *     live camera, so its tilt *is* the ship's bank and its offset from the nose *is* pitch;
-   *   - Z / N pips mark world up and world down, so straight-up and straight-down are never
-   *     ambiguous even when the horizon has left the screen;
-   *   - the numeric readout gives heading in degrees and pitch signed from level.
-   */
-  private drawAttitude(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    camera: THREE.Camera,
-    p: ReturnType<typeof palette>,
-  ): void {
-    this.attForward.set(0, 0, -1).applyQuaternion(this.playerQuat);
-
-    // Horizontal heading vector. Near-vertical flight makes the projection degenerate, so fall
-    // back to the ship's own "down the canopy" axis, which is the direction the nose is
-    // travelling toward on the horizon.
-    this.attHorizForward.set(this.attForward.x, 0, this.attForward.z);
-    if (this.attHorizForward.lengthSq() < 1e-6) {
-      this.attHorizForward.set(0, -1, 0).applyQuaternion(this.playerQuat);
-      this.attHorizForward.y = 0;
-      if (this.attHorizForward.lengthSq() < 1e-6) this.attHorizForward.set(0, 0, -1);
-    }
-    this.attHorizForward.normalize();
-    this.attHorizRight.set(-this.attHorizForward.z, 0, this.attHorizForward.x);
-
-    const d = PLAYER.reticleDistance;
-    ctx.save();
-    ctx.lineWidth = 1.2;
-
-    // --- Horizon ladder ---------------------------------------------------------------------
-    // Sampled as a polyline rather than a straight line: under a perspective projection the
-    // horizon is only straight when the camera is level, and a straight approximation visibly
-    // detaches from the world during a loop.
-    ctx.strokeStyle = cssColor(p.hudDim);
-    ctx.globalAlpha = 0.55;
-    ctx.beginPath();
-    let drawing = false;
-    for (let i = 0; i <= ATTITUDE_SEGMENTS; i++) {
-      const t = i / ATTITUDE_SEGMENTS;
-      const ang = (t - 0.5) * 2 * ATTITUDE_SPAN;
-      const c = Math.cos(ang);
-      const s = Math.sin(ang);
-      this.attPoint
-        .set(0, 0, 0)
-        .addScaledVector(this.attHorizForward, c * d)
-        .addScaledVector(this.attHorizRight, s * d)
-        .add(this.playerWorldPos);
-
-      this.scratchToTarget.copy(this.attPoint).sub(camera.position);
-      if (this.scratchToTarget.dot(this.scratchCamForward) <= 0) {
-        drawing = false;
-        continue;
-      }
-      this.scratchNdc.copy(this.attPoint).project(camera);
-      const x = (this.scratchNdc.x * 0.5 + 0.5) * w;
-      const y = (1 - (this.scratchNdc.y * 0.5 + 0.5)) * h;
-      if (!drawing) {
-        ctx.moveTo(x, y);
-        drawing = true;
-      } else {
-        ctx.lineTo(x, y);
-      }
-    }
-    ctx.stroke();
-
-    // --- Zenith / nadir pips ----------------------------------------------------------------
-    for (let i = 0; i < 2; i++) {
-      const up = i === 0;
-      this.attPoint.set(0, up ? d : -d, 0).add(this.playerWorldPos);
-      this.scratchToTarget.copy(this.attPoint).sub(camera.position);
-      if (this.scratchToTarget.dot(this.scratchCamForward) <= 0) continue;
-      this.scratchNdc.copy(this.attPoint).project(camera);
-      const x = (this.scratchNdc.x * 0.5 + 0.5) * w;
-      const y = (1 - (this.scratchNdc.y * 0.5 + 0.5)) * h;
-      ctx.globalAlpha = 0.5;
-      ctx.strokeStyle = cssColor(p.hudDim);
-      ctx.beginPath();
-      ctx.moveTo(x - 5, y);
-      ctx.lineTo(x + 5, y);
-      ctx.moveTo(x, y - 5);
-      ctx.lineTo(x, y + 5);
-      ctx.stroke();
-      ctx.globalAlpha = 0.75;
-      ctx.fillStyle = cssColor(p.hudDim);
-      ctx.font = ATTITUDE_FONT;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(up ? 'Z' : 'N', x, y - 11);
-    }
-
-    // --- Numeric readout --------------------------------------------------------------------
-    // Heading is a compass bearing about world up; pitch is signed elevation from level. Both
-    // are the two numbers a pilot actually needs to re-orient after a manoeuvre.
-    const heading = (450 - (Math.atan2(this.attHorizForward.x, -this.attHorizForward.z) * 180) / Math.PI) % 360;
-    const pitchDeg = (Math.asin(Math.max(-1, Math.min(1, this.attForward.y))) * 180) / Math.PI;
-    ctx.globalAlpha = 0.8;
-    ctx.fillStyle = cssColor(p.hudPrimary);
-    ctx.font = ATTITUDE_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(
-      `HDG ${Math.round(heading).toString().padStart(3, '0')}  PCH ${pitchDeg >= 0 ? '+' : '-'}${Math.abs(Math.round(pitchDeg)).toString().padStart(2, '0')}`,
-      w * 0.5,
-      Math.round(h * 0.5 + ATTITUDE_READOUT_OFFSET),
-    );
-
-    ctx.restore();
-    ctx.globalAlpha = 1;
-  }
-
   private drawOverlay(
     lockedFound: boolean,
     hardLock: boolean,
@@ -817,8 +675,6 @@ export class Hud {
     ctx.clearRect(0, 0, w, h);
 
     const p = palette();
-
-    this.drawAttitude(ctx, w, h, camera, p);
 
     // --- Nose crosshair ---------------------------------------------------------------------
     // Projected along the ship's forward ray, *not* pinned to the viewport centre. The chase
