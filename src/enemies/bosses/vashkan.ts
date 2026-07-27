@@ -30,6 +30,18 @@ const desired = /*#__PURE__*/ new THREE.Vector3();
 const toPlayer = /*#__PURE__*/ new THREE.Vector3();
 const lateral = /*#__PURE__*/ new THREE.Vector3();
 
+/**
+ * Playtester feedback #5/#6: Vashkan was the hardest boss to actually hit — small silhouette,
+ * constantly moving, no lock-on (fixed separately in `lockPoint`/the boss-query adapter). This
+ * is the one part of "make it bigger" this file owns: 14 -> 20 world units (+43%, more than
+ * doubling the hittable cross-section at pi*r^2). The whole body model is scaled by the same
+ * factor in `build()` so the mesh a player sees matches the sphere that actually absorbs hits —
+ * a hitbox visibly bigger than the ship reads as "phantom hits", so both move together.
+ */
+const OLD_RADIUS = 14;
+const NEW_RADIUS = 20;
+const HIT_SCALE = NEW_RADIUS / OLD_RADIUS;
+
 export class Vashkan extends Boss {
   private pylonAngle = 0;
   private readonly pylons: THREE.Mesh[] = [];
@@ -38,10 +50,14 @@ export class Vashkan extends Boss {
   /** Flips periodically so it strafes both ways instead of orbiting predictably. */
   private strafeSign = 1;
   private strafeTimer = 0;
+  /** Drives the vertical weave in `move()`. */
+  private weaveTimer = 0;
+  /** Toggled each `fireFan` call so successive volleys alternate their opening plane. */
+  private fanVertical = false;
 
   constructor() {
     super('vashkan', 'VASHKAN PRIME', 'The Lance Sovereign');
-    this.radius = 14;
+    this.radius = NEW_RADIUS;
   }
 
   override get phases(): readonly BossPhase[] {
@@ -58,13 +74,14 @@ export class Vashkan extends Boss {
     });
 
     // A long, forward-swept dart — it should read as a fighter, not a station, so the player
-    // immediately understands this one will chase them.
-    const body = new THREE.Mesh(new THREE.ConeGeometry(4.5, 26, 6), hullMat);
+    // immediately understands this one will chase them. Dimensions scaled by HIT_SCALE (see
+    // above) to match the enlarged collision radius.
+    const body = new THREE.Mesh(new THREE.ConeGeometry(4.5 * HIT_SCALE, 26 * HIT_SCALE, 6), hullMat);
     body.rotation.x = -Math.PI / 2;
     this.root.add(body);
 
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(30, 0.9, 7), hullMat);
-    wing.position.z = 3;
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(30 * HIT_SCALE, 0.9 * HIT_SCALE, 7 * HIT_SCALE), hullMat);
+    wing.position.z = 3 * HIT_SCALE;
     this.root.add(wing);
 
     const engineMat = new THREE.MeshBasicMaterial({
@@ -73,8 +90,8 @@ export class Vashkan extends Boss {
       transparent: true,
       depthWrite: false,
     });
-    const engine = new THREE.Mesh(new THREE.SphereGeometry(2.6, 12, 8), engineMat);
-    engine.position.z = 12;
+    const engine = new THREE.Mesh(new THREE.SphereGeometry(2.6 * HIT_SCALE, 12, 8), engineMat);
+    engine.position.z = 12 * HIT_SCALE;
     this.root.add(engine);
 
     // Pylons stay hidden until phase 2.
@@ -86,7 +103,7 @@ export class Vashkan extends Boss {
       roughness: 0.4,
     });
     for (let i = 0; i < 4; i++) {
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 16, 6), pylonMat.clone());
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(1.4 * HIT_SCALE, 1.4 * HIT_SCALE, 16 * HIT_SCALE, 6), pylonMat.clone());
       mesh.visible = false;
       this.root.add(mesh);
       this.pylons.push(mesh);
@@ -121,10 +138,16 @@ export class Vashkan extends Boss {
       const closing = clamp((dist - engage) / engage, -1, 1);
       lateral.copy(UP).cross(toPlayer).normalize().multiplyScalar(this.strafeSign);
 
+      // A slow vertical weave, independent of the strafe flip, so holding a level plane never
+      // stays optimal for long — the player has to track altitude, not just heading (feedback
+      // #5 explicitly praised Vashkan's mobility; this is more of the same idea on the Y axis).
+      this.weaveTimer += dt * 0.6 * phase.speed;
+
       desired
         .copy(toPlayer)
         .multiplyScalar(closing * 150 * phase.speed)
         .addScaledVector(lateral, 95 * phase.speed);
+      desired.y += Math.sin(this.weaveTimer) * 55 * phase.speed;
 
       dampVec3(this.velocity, desired, 0.02, dt);
       this.position.addScaledVector(this.velocity, dt);
@@ -139,12 +162,16 @@ export class Vashkan extends Boss {
     toPlayer.copy(ctx.playerPos).sub(this.position);
     if (toPlayer.lengthSq() > 0.001) lookRotation(this.quaternion, toPlayer.normalize(), UP);
 
-    // Pylons rotate as a rigid cross around it.
+    // Pylons rotate as a rigid cross around it. The *18 (was *6) vertical swing means a pylon
+    // spends real time well above and below the hull's own plane, so its horizontal sweep
+    // (patternSweep always fires level, see boss.ts) launches from a genuinely different height
+    // each time the cross turns — attacks arrive from above and below without patternSweep's
+    // own plane math needing to change. Feedback #6: "shoots along one plane basically".
     this.pylonAngle += dt * 0.85 * phase.speed;
     for (let i = 0; i < this.pylons.length; i++) {
       const a = this.pylonAngle + (i / this.pylons.length) * Math.PI * 2;
       const pylon = this.pylons[i]!;
-      pylon.position.set(Math.cos(a) * 30, Math.sin(a * 1.7) * 6, Math.sin(a) * 30);
+      pylon.position.set(Math.cos(a) * 30, Math.sin(a * 1.7) * 18, Math.sin(a) * 30);
       pylon.rotation.z = a;
     }
   }
@@ -155,8 +182,16 @@ export class Vashkan extends Boss {
     patternAimedBurst(ctx, this.position, ctx.playerPos, ctx.playerVel, 3, 96, damage, phaseColor(this.phase));
   }
 
+  /**
+   * Alternates the fan's opening plane between horizontal (world-up hint, the historical
+   * behaviour) and vertical (the boss's own current lateral/strafe axis as the hint) each time
+   * it fires, so a player who has solved "dodge sideways" still has to solve "dodge vertically"
+   * on the very next volley. `lateral` is the same vector `move()` just computed this step.
+   */
   fireFan(ctx: BossContext, damage: number): void {
-    patternFan(ctx, this.position, ctx.playerPos, 7, 0.7, 70, damage, phaseColor(this.phase));
+    this.fanVertical = !this.fanVertical;
+    const axisHint = this.fanVertical && lateral.lengthSq() > 0.001 ? lateral : UP;
+    patternFan(ctx, this.position, ctx.playerPos, 7, 0.7, 70, damage, phaseColor(this.phase), axisHint);
   }
 
   firePylons(ctx: BossContext, damage: number): void {

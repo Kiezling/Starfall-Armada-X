@@ -29,9 +29,11 @@ import { Pool } from './core/pool';
 import { GameClock } from './core/time';
 import * as THREE from 'three';
 import { FlightModel, lookRotation } from './ship/flight';
-import { createPlayerState } from './ship/player';
+import { createPlayerState, PlayerSystem } from './ship/player';
 import type { InputAction, InputState } from './core/types';
 import { TargetingSystem } from './combat/targeting';
+import { PLAYER } from './core/constants';
+import { TypedEventBus } from './core/events';
 
 export interface TestResult {
   name: string;
@@ -835,6 +837,168 @@ function testGimbalAssist(): void {
   );
 }
 
+/**
+ * Overheating must have a real, self-clearing consequence (playtester issue #7a): crossing
+ * heatMax latches PlayerState.venting, and it must clear itself once heat bleeds back below
+ * heatRearmThreshold — no fixed timer — mirroring the boostRearmThreshold idiom.
+ */
+function testHeatOverheatLockout(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  // Simulate heat having just been pushed to the cap by a shot (weapons.ts's addHeat clamps
+  // the same way) and let PlayerSystem's next step discover the crossing, matching real frame
+  // order: weapon fire adds heat, then the following step's updateHeat() reacts to it.
+  player.heat = PLAYER.heatMax;
+  playerSystem.update(1 / 60);
+
+  check(
+    'reaching heatMax latches the overheat lockout',
+    player.venting,
+    `venting=${player.venting}, heat=${player.heat.toFixed(1)}`,
+  );
+
+  let steps = 0;
+  while (player.venting && steps < 600) {
+    playerSystem.update(1 / 60);
+    steps++;
+  }
+  const recoverySeconds = steps / 60;
+
+  check(
+    'the lockout clears on its own once heat drops below the rearm threshold',
+    !player.venting && player.heat <= PLAYER.heatRearmThreshold,
+    `cleared after ${recoverySeconds.toFixed(2)}s, heat=${player.heat.toFixed(1)}`,
+  );
+  check(
+    'recovery from a full overheat lands in the ~2-3s target, not a fixed 2s dead zone',
+    recoverySeconds > 1.5 && recoverySeconds < 3.0,
+    `recovery took ${recoverySeconds.toFixed(2)}s (heatMax=${PLAYER.heatMax}, heatCooling=${PLAYER.heatCooling}, heatRearmThreshold=${PLAYER.heatRearmThreshold})`,
+  );
+}
+
+/**
+ * Overcharge Vents repurposes overheat into a detonation (weapons.ts's addHeat/overchargeDetonate
+ * path). PlayerSystem.updateHeat must never latch the normal lockout for that augment — issue #7a
+ * explicitly calls out not breaking this interaction.
+ */
+function testOverchargeVentsBypassesLockout(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  player.stats.overchargeVents = true;
+  player.heat = PLAYER.heatMax;
+  playerSystem.update(1 / 60);
+
+  check(
+    'Overcharge Vents never latches the heat lockout',
+    !player.venting,
+    `venting=${player.venting} (should stay false — weapons.ts resets heat to 0 before this ever observes the cap in real play)`,
+  );
+}
+
+/**
+ * Lock-on must not snap instantly (playtester issue #14): a candidate has to be held for the
+ * documented 0.35-0.6s dwell window before TargetingSystem.lockedId actually changes.
+ */
+function testLockAcquisitionDwell(): void {
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+
+  const enemyPos = new THREE.Vector3(0, 0, -100); // dead ahead of the default (identity) facing.
+  const mockEnemy = { id: 7, position: enemyPos, velocity: new THREE.Vector3(), active: true, radius: 5 };
+  const mockEnemyQuery = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy,
+    getById: (id: number) => (id === 7 ? mockEnemy : null),
+  } as any;
+  const settings = { aimAssist: 0 } as any;
+  const step = 1 / 60;
+
+  targeting.update(player, mockEnemyQuery, 1, null as any, settings, step);
+  check(
+    'a dead-on-boresight target does not lock on the very first frame',
+    targeting.lockedId < 0,
+    `lockedId=${targeting.lockedId} after 1 frame — dwell should still be accumulating`,
+  );
+  check(
+    'acquisition progress is exposed and rising while dwelling',
+    targeting.acquisitionProgress > 0 && targeting.acquisitionProgress < 1,
+    `acquisitionProgress=${targeting.acquisitionProgress.toFixed(3)}`,
+  );
+
+  // Keep dwelling until the lock completes; the 1.0s ceiling is well past the documented
+  // window so a regression that never locks fails loudly instead of looping forever.
+  let seconds = step;
+  while (targeting.lockedId < 0 && seconds < 1.0) {
+    targeting.update(player, mockEnemyQuery, 1, null as any, settings, step);
+    seconds += step;
+  }
+  check(
+    'the lock completes within the documented 0.35-0.6s dwell window',
+    targeting.lockedId === 7 && seconds >= 0.35 && seconds <= 0.7,
+    `locked after ${seconds.toFixed(2)}s (lockedId=${targeting.lockedId})`,
+  );
+  check(
+    'acquisitionProgress reads back to 0 once a lock exists',
+    targeting.acquisitionProgress === 0,
+    `acquisitionProgress=${targeting.acquisitionProgress}`,
+  );
+}
+
+/** Partial acquisition progress must decay (not persist) once the reticle looks away. */
+function testLockAcquisitionDecaysWhenLookingAway(): void {
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+
+  const enemyPos = new THREE.Vector3(0, 0, -100);
+  const mockEnemy = { id: 3, position: enemyPos, velocity: new THREE.Vector3(), active: true, radius: 5 };
+  const withTarget = {
+    queryNear: () => 1,
+    getByIndex: () => mockEnemy,
+    getById: (id: number) => (id === 3 ? mockEnemy : null),
+  } as any;
+  const empty = { queryNear: () => 0, getByIndex: () => null, getById: () => null } as any;
+  const settings = { aimAssist: 0 } as any;
+  const step = 1 / 60;
+
+  // Dwell for a quarter second — short of a full lock — then look away for a full second.
+  for (let i = 0; i < 15; i++) targeting.update(player, withTarget, 1, null as any, settings, step);
+  const midway = targeting.acquisitionProgress;
+  for (let i = 0; i < 60; i++) targeting.update(player, empty, 0, null as any, settings, step);
+
+  check(
+    'looking away decays acquisition progress back to zero instead of holding or completing it',
+    midway > 0 && targeting.acquisitionProgress === 0 && targeting.lockedId < 0,
+    `midway=${midway.toFixed(3)}, after look-away=${targeting.acquisitionProgress.toFixed(3)}, lockedId=${targeting.lockedId}`,
+  );
+}
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -854,5 +1018,9 @@ export function runSelfTest(): TestResult[] {
   testLockAssistConvergesAndYields();
   testLeadTargetPrediction();
   testGimbalAssist();
+  testHeatOverheatLockout();
+  testOverchargeVentsBypassesLockout();
+  testLockAcquisitionDwell();
+  testLockAcquisitionDecaysWhenLookingAway();
   return results;
 }

@@ -65,7 +65,7 @@ interface WeaponEntry {
 const PRIMARY_WEAPONS: readonly WeaponEntry[] = [
   { name: 'Pulse Repeater', tag: 'PRIMARY', description: 'Fast, tight, forgiving — the baseline. Lowest per-shot damage; poor against armour.' },
   { name: 'Lance Driver', tag: 'PRIMARY', description: 'Charge-and-release railgun. Pierces everything in a line. Charging commits you — missing costs the whole cycle.' },
-  { name: 'Scatter Vents', tag: 'PRIMARY', description: 'Shotgun cone. Deletes things at knife range. Damage falls off hard past 40m.' },
+  { name: 'Scatter Vents', tag: 'PRIMARY', description: 'Shotgun cone. Deletes things at knife range. Damage falls off hard past 140m.' },
   { name: 'Arc Tether', tag: 'PRIMARY', description: 'Auto-connecting chain lightning, hits up to 4 targets. Low single-target damage; needs crowds to pay off.' },
   { name: 'Flak Battery', tag: 'PRIMARY', description: 'Proximity-fused AoE shells. Slow projectiles; punishes bad leading.' },
   { name: 'Singularity Coil', tag: 'PRIMARY', description: 'Slow orb that drags enemies into a clump. Almost no direct damage — a setup tool.' },

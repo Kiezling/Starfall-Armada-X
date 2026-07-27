@@ -15,6 +15,11 @@
  *    mounts with a traverse envelope. When a locked target's intercept point falls inside the
  *    gimbal's angular range, the guns physically traverse to lock on, firing at the intercept
  *    point directly. This teaches leading while keeping close shots reliable.
+ *
+ * 4. **Acquisition takes a beat.** A lock only completes after the reticle has held on a
+ *    candidate for ACQUIRE_TIME seconds — see that constant below. This is what makes rule 1
+ *    ("sticky") actually readable: a lock you can see forming is one whose stickiness makes
+ *    sense, instead of the reticle appearing to have simply grabbed the first thing it saw.
  */
 
 import * as THREE from 'three';
@@ -25,10 +30,34 @@ import type { EnemyQuery } from './projectiles';
 
 /** Maximum lock range. Beyond this the HUD would be guessing anyway. */
 const LOCK_RANGE = 700;
-/** Half-angle of the cone the lock searches, in radians (~28°). */
-const LOCK_CONE = 0.5;
+/**
+ * Half-angle of the cone the *automatic* scan searches, in radians (~37°). This used to be
+ * 0.5 rad (~28.6°) — barely narrower than half of the base camera FOV (fovBase 62° → 31°
+ * half-angle, see constants.ts CAMERA). That meant a target sitting plainly on screen, near
+ * the edge, could already be outside the cone the auto-scan considered — exactly the "enemies
+ * zipping by that never became lockable" symptom, since a fast crosser spends most of its
+ * screen time near the edges, not centred. Widened to sit past half of even the *boosted* FOV
+ * (fovBoost 78° → 39° half-angle) so anything visibly on screen is scannable. Manual TAB
+ * cycling (`cycle()`, below) was never limited by this cone and could already reach any live
+ * target within LOCK_RANGE regardless of angle.
+ */
+const LOCK_CONE = 0.65;
 /** A challenger must be this much better aligned before it steals an existing lock. */
 const STICKINESS = 0.06;
+/**
+ * Seconds the reticle must hold on a candidate before an unlocked scan turns into an actual
+ * lock (DESIGN §13/§15's "the lock is sticky" now also means "the lock isn't instant"). Sized
+ * for a deliberate, readable acquisition — long enough to see the reticle "settle" onto a
+ * target, short enough that it never feels like a dead input in a dogfight.
+ */
+const ACQUIRE_TIME = 0.45;
+/**
+ * Seconds for acquisition progress to fully decay once the reticle drifts off the current
+ * candidate. Decaying (not resetting instantly) means a brief wobble off-target doesn't cost
+ * the whole window, while sustained inattention still loses it — "partial progress that
+ * decays if they look away," per the design ask.
+ */
+const ACQUIRE_DECAY_TIME = 0.3;
 
 /**
  * Assist cone half-angles. Sized for a keyboard: steering resolution is coarser than a mouse's,
@@ -58,13 +87,29 @@ export class TargetingSystem {
   /** Cached player velocity from last update(), for lead point calculations. */
   private readonly cachedPlayerVel = /*#__PURE__*/ new THREE.Vector3();
 
+  /** Enemy id the dwell timer is currently accumulating on, or -1 while nothing qualifies. */
+  private acquireCandidate = -1;
+  /** 0..1 dwell progress toward completing a lock on `acquireCandidate`. */
+  private acquireProgress = 0;
+
   get lockedId(): number {
     return this.locked;
+  }
+
+  /**
+   * 0..1 progress of the current lock-acquisition dwell, for the HUD's future filling-ring
+   * indicator (see DESIGN §13/§15). Reads 0 once a lock exists — dwelling only happens on the
+   * way to a lock, not after one — and 0 whenever nothing is currently being acquired.
+   */
+  get acquisitionProgress(): number {
+    return this.locked >= 0 ? 0 : this.acquireProgress;
   }
 
   clear(): void {
     this.locked = -1;
     this.lockTimer = 0;
+    this.acquireCandidate = -1;
+    this.acquireProgress = 0;
   }
 
   update(
@@ -102,14 +147,18 @@ export class TargetingSystem {
       }
     }
 
-    // Look for a better candidate.
+    // Look for a better candidate. `enemyCount` no longer gates this — the grid query result
+    // count is already an exact answer for "how many candidates does this call have," and
+    // enemyCount (liveCount) is a frame-stale duplicate of the same fact (see EnemyManager.
+    // liveCount's own doc comment on that staleness). Gating on it here bought nothing but a
+    // second number that could disagree with the first.
     const count = enemies.queryNear(player.position.x, player.position.y, player.position.z, LOCK_RANGE, this.results);
-    const limit = Math.min(count, enemyCount > 0 ? count : 0);
+    void enemyCount;
 
     let bestId = -1;
     let bestAlignment = Math.cos(LOCK_CONE);
 
-    for (let i = 0; i < limit; i++) {
+    for (let i = 0; i < count; i++) {
       const enemy = enemies.getByIndex(this.results[i]!);
       if (!enemy || !enemy.active) continue;
 
@@ -125,11 +174,32 @@ export class TargetingSystem {
       }
     }
 
-    if (bestId < 0) return;
     if (this.locked < 0) {
-      this.locked = bestId;
+      // No confirmed lock yet: the best in-cone candidate has to be held for ACQUIRE_TIME
+      // seconds before it actually locks, rather than locking the instant it is merely the
+      // best thing in the cone. See ACQUIRE_TIME's doc comment for why.
+      if (bestId !== this.acquireCandidate) {
+        // Either nothing qualifies this frame, or a different candidate is best now — decay
+        // rather than snap to 0, so a one-frame flicker between two close candidates (or a
+        // brief glance away) does not forfeit the whole window. Once decay bottoms out, adopt
+        // whatever is best now so accumulation can begin on it this same frame, rather than
+        // losing a frame to "notice, then start counting" on the next call.
+        this.acquireProgress = Math.max(0, this.acquireProgress - dt / ACQUIRE_DECAY_TIME);
+        if (this.acquireProgress <= 0) this.acquireCandidate = bestId;
+      }
+      if (bestId >= 0 && bestId === this.acquireCandidate) {
+        this.acquireProgress = Math.min(1, this.acquireProgress + dt / ACQUIRE_TIME);
+      }
+
+      if (this.acquireProgress >= 1 && this.acquireCandidate >= 0) {
+        this.locked = this.acquireCandidate;
+        this.acquireCandidate = -1;
+        this.acquireProgress = 0;
+      }
       return;
     }
+
+    if (bestId < 0) return;
     // Hysteresis: only switch for a meaningfully better angle.
     if (bestId !== this.locked && bestAlignment > currentAlignment + STICKINESS) {
       this.locked = bestId;
