@@ -82,6 +82,10 @@ green rather than committing a broken build:
 for i in $(seq 1 90); do
   if npx tsc --noEmit >/tmp/tc.log 2>&1 && npm run selftest >/tmp/st.log 2>&1; then
     echo GREEN; exit 0; fi; sleep 10; done
+# Must be here: without it the loop falls through with the exit status of the
+# last `sleep` — i.e. 0 — so a gate that never went green reports success and
+# whatever is downstream happily commits a broken snapshot.
+echo "STILL RED after 15min"; grep -c '^\[FAIL\]' /tmp/st.log; exit 1
 ```
 
 A stop hook demands a clean tree each turn. Commit green snapshots of finished
