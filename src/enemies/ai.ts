@@ -162,6 +162,55 @@ export function separate(
 }
 
 /**
+ * Desired velocity toward the local centroid of `self`'s neighbours within `radius` — the
+ * Reynolds "cohesion" rule, and the counterpart to `separate` above (that one pushes apart at
+ * close range; this one pulls together at long range). Used by the Warden to tuck in behind
+ * whichever cluster of allies it is currently supporting rather than drifting to the arena edge
+ * once the player gets close, which `flee` alone would do. Pure scalar accumulation over
+ * `neighbors`, matching `separate`'s zero-allocation contract exactly.
+ */
+export function cohere(
+  out: THREE.Vector3,
+  self: Enemy,
+  neighbors: EnemyNeighbors,
+  radius: number,
+  maxSpeed: number,
+  vel: THREE.Vector3,
+): void {
+  out.set(0, 0, 0);
+  let count = 0;
+  const radiusSq = radius * radius;
+  const sx = self.position.x;
+  const sy = self.position.y;
+  const sz = self.position.z;
+
+  for (let i = 0; i < neighbors.count; i++) {
+    const n = neighbors.get(i);
+    if (!n || n === self || !n.active) continue;
+    const dx = n.position.x - sx;
+    const dy = n.position.y - sy;
+    const dz = n.position.z - sz;
+    const dSq = dx * dx + dy * dy + dz * dz;
+    if (dSq >= radiusSq || dSq < EPSILON) continue;
+    out.x += dx;
+    out.y += dy;
+    out.z += dz;
+    count++;
+  }
+
+  if (count === 0) {
+    out.set(0, 0, 0);
+    return;
+  }
+  out.multiplyScalar(1 / count); // now the offset to the local flock centroid
+  if (out.lengthSq() < EPSILON) {
+    out.set(0, 0, 0);
+    return;
+  }
+  out.normalize().multiplyScalar(maxSpeed).sub(vel);
+}
+
+/**
  * A small, smoothly-varying acceleration unique to this enemy, so a group holding formation
  * still reads as individual pilots rather than one rigid block. Purely a function of elapsed
  * time and `enemy.seed` — no stored state, so it costs nothing and never desyncs on its own.
@@ -630,6 +679,121 @@ function mineLayerBrain(enemy: Enemy, ctx: AiContext, dt: number, intent: AiInte
 }
 
 /* ------------------------------------------------------------------------------------------ */
+/* Mortar — kites at extreme range, telegraphs, drops a proximity mine on the player's spot     */
+/* ------------------------------------------------------------------------------------------ */
+
+const MORTAR_STATE_REPOSITION = 0;
+const MORTAR_STATE_TELEGRAPH = 1;
+
+/** Shorter than Lancer's 1.4s beam telegraph: the payoff here is a placed hazard rather than
+ * an instant hit, so the warning window can be tighter without becoming unfair. */
+const MORTAR_TELEGRAPH_TIME = 1.2;
+const MORTAR_READY_DELAY = 0.6;
+
+function mortarBrain(enemy: Enemy, ctx: AiContext, dt: number, intent: AiIntent): void {
+  const def = enemy.def;
+  _toPlayer.copy(ctx.playerPos).sub(enemy.position);
+  const dist = _toPlayer.length();
+
+  if (justSpawned(enemy, dt)) {
+    enemy.aiState = MORTAR_STATE_REPOSITION;
+    enemy.aiTimer = MORTAR_READY_DELAY;
+  }
+
+  switch (enemy.aiState) {
+    case MORTAR_STATE_REPOSITION: {
+      // Same reposition shape as the Lancer: retreat if crowded, creep closer if out of range,
+      // otherwise hold — a Mortar's sniping band is where it actually stops.
+      if (dist < def.engageRange * 0.8) {
+        flee(_steerA, enemy.position, ctx.playerPos, def.speed, enemy.velocity);
+        intent.accel.add(_steerA);
+      } else if (dist > def.fireRange * 0.95) {
+        seek(_steerA, enemy.position, ctx.playerPos, def.speed * 0.6, enemy.velocity);
+        intent.accel.add(_steerA);
+      }
+      faceSafely(intent, _toPlayer, enemy.forward);
+
+      enemy.aiTimer -= dt;
+      if (enemy.aiTimer <= 0) {
+        const inBand = dist >= def.engageRange * 0.8 && dist <= def.fireRange;
+        if (inBand) {
+          enemy.aiState = MORTAR_STATE_TELEGRAPH;
+          enemy.aiTimer = MORTAR_TELEGRAPH_TIME;
+        } else {
+          enemy.aiTimer = MORTAR_READY_DELAY;
+        }
+      }
+      break;
+    }
+    case MORTAR_STATE_TELEGRAPH:
+    default: {
+      intent.wantsTelegraph = true;
+      faceSafely(intent, _toPlayer, enemy.forward);
+
+      enemy.aiTimer -= dt;
+      if (enemy.aiTimer <= 0) {
+        // Fires exactly once, on the single frame the telegraph completes, then immediately
+        // returns to REPOSITION so the next frame doesn't re-trigger it. `wantsSpecial` tells
+        // manager.ts to drop the shell at *this* frame's player position (no lead) — same
+        // "no lead, dodge during the telegraph" rule the Lancer's beam uses, just paid out as a
+        // lingering hazard (manager.ts's 'mortar' handleSpecial branch) instead of an instant
+        // hit, which is what makes camping the same spot dangerous over multiple volleys even
+        // though any single shell is dodgeable by simply moving.
+        intent.wantsSpecial = true;
+        enemy.aiState = MORTAR_STATE_REPOSITION;
+        enemy.aiTimer = Math.max(0.6, def.fireInterval - MORTAR_TELEGRAPH_TIME);
+      }
+      break;
+    }
+  }
+
+  addCommonSteering(enemy, ctx, intent, SEPARATE_STRENGTH);
+  // No lead, matching the Lancer's own beam: the shell lands wherever the player is *right now*.
+  intent.aimPoint.copy(ctx.playerPos);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Warden — hangs near its escort, restores their shields; flees the player, never leads a fight */
+/* ------------------------------------------------------------------------------------------ */
+
+/** Radius `cohere` searches for allies to tuck in behind. Deliberately larger than
+ * manager.ts's `WARDEN_AURA_RADIUS` (70): the Warden should be drawn toward a cluster before
+ * it's necessarily within aura range of all of it, the same way a real support pilot closes on
+ * a fight already in progress rather than teleporting into position. */
+const WARDEN_COHESION_RADIUS = 90;
+/** Duty cycle for its point-defence potshots, same idiom as Mine Layer's — the Warden is not
+ * meant to feel like a threat on its own, only as the thing keeping its escort alive. */
+const WARDEN_POTSHOT_DUTY = 0.75;
+
+function wardenBrain(enemy: Enemy, ctx: AiContext, _dt: number, intent: AiIntent): void {
+  const def = enemy.def;
+  _toPlayer.copy(ctx.playerPos).sub(enemy.position);
+  const dist = _toPlayer.length();
+
+  // Never lets the player close inside its standoff — a Warden with the player on top of it is
+  // a Warden about to die before its aura matters to anything.
+  if (dist < def.engageRange) {
+    flee(_steerA, enemy.position, ctx.playerPos, def.speed, enemy.velocity);
+    intent.accel.add(_steerA);
+  }
+
+  // Pulled toward whatever it's protecting: without this it would simply flee to the arena edge
+  // the instant the player approaches and its aura would end up covering nobody.
+  cohere(_steerA, enemy, ctx.neighbors, WARDEN_COHESION_RADIUS, def.speed, enemy.velocity);
+  intent.accel.add(_steerA);
+
+  faceSafely(intent, _toPlayer, enemy.forward);
+
+  // Weak point-defence only, same duty-cycle idiom as Mine Layer's pot-shots — a Warden's
+  // threat is the aura (manager.ts's `applyWardenAura`), not its gun.
+  const potshotPhase = Math.sin(ctx.elapsed * 0.6 + enemy.seed * TAU);
+  intent.wantsFire = dist <= def.fireRange && potshotPhase > WARDEN_POTSHOT_DUTY;
+  intent.aimPoint.copy(ctx.playerPos);
+
+  addCommonSteering(enemy, ctx, intent, SEPARATE_STRENGTH);
+}
+
+/* ------------------------------------------------------------------------------------------ */
 /* Idle brain — no live player target (e.g. death-cam / intermission)                          */
 /* ------------------------------------------------------------------------------------------ */
 
@@ -679,6 +843,12 @@ export function updateBrain(enemy: Enemy, ctx: AiContext, dt: number, intent: Ai
       break;
     case 'mineLayer':
       mineLayerBrain(enemy, ctx, dt, intent);
+      break;
+    case 'mortar':
+      mortarBrain(enemy, ctx, dt, intent);
+      break;
+    case 'warden':
+      wardenBrain(enemy, ctx, dt, intent);
       break;
   }
 }

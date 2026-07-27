@@ -137,7 +137,9 @@ export type EnemyTypeId =
   | 'lancer'
   | 'bulwark'
   | 'carrier'
-  | 'mineLayer';
+  | 'mineLayer'
+  | 'mortar'
+  | 'warden';
 
 export type BossId = 'hexard' | 'vashkan' | 'mawCore';
 

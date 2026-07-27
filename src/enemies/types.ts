@@ -152,16 +152,92 @@ export const ENEMY_DEFS: Readonly<Record<EnemyTypeId, EnemyDef>> = {
     armorReduction: 0,
     threat: 3,
   },
+
+  // Artillery. Punishes standing still rather than closing distance: it never fires directly at
+  // the player, it telegraphs then drops a proximity mine exactly on the player's position at
+  // the moment the telegraph completes (see ai.ts's mortarBrain and manager.ts's `handleSpecial`
+  // 'mortar' branch). Move during the telegraph and the shell lands on empty ground; stand still
+  // and it lands on you. Either way the mine outlives the shot (its `life` in manager.ts is far
+  // longer than `fireInterval`), so a player who keeps returning to the same spot to "turtle"
+  // slowly turns their own hiding place into a minefield — a genuinely different problem from
+  // Lancer's "close the gap" or Mine Layer's "don't chase it through its own field," both of
+  // which are about where the *enemy* is, not where the *player* has been standing.
+  //
+  // speed 36 (36/115 ≈ 31% of PLAYER.baseSpeed) is slower than even the Lancer's 40: a sniper at
+  // least has to reposition to keep a firing line, a Mortar's indirect shot doesn't need one, so
+  // it has even less reason to move. turnRate 1.0 (50% of PLAYER.baseTurnRate) is just enough to
+  // keep its nose — and its telegraph glow — pointed at the threat. hull 55 / shield 15 sit a
+  // little above the Lancer's 45/0: it needs a few more seconds of exposure to kill, which
+  // matters because its 340 fireRange (20 further than Lancer's 320) means closing on a Mortar
+  // usually means passing through a Lancer's band first if the wave paired them.
+  mortar: {
+    id: 'mortar',
+    displayName: 'Mortar',
+    hull: 55,
+    shield: 15,
+    radius: 3.0,
+    speed: 36,
+    turnRate: 1.0,
+    engageRange: 260,
+    fireRange: 340,
+    fireInterval: 4.4,
+    damage: 24,
+    ...reward(3.5),
+    armorArc: 0,
+    armorReduction: 0,
+    threat: 3.5,
+  },
+
+  // Support. Never threatens the player directly — the threat is that it keeps its escort
+  // alive. While in range of allies it continuously restores their shields (manager.ts's
+  // `applyWardenAura`), so a group fought while its Warden lives just doesn't stay damaged.
+  // This is a genuinely different "shape of fight" problem from Carrier's: Carrier is a
+  // priority target because ignoring it means *more* enemies; a Warden is a priority target
+  // because ignoring it means the enemies already in front of you refuse to die.
+  //
+  // speed 70 (70/115 ≈ 61% of PLAYER.baseSpeed) and turnRate 1.6 (80% of PLAYER.baseTurnRate)
+  // are both comfortably below the player's own — a Warden that gets caught alone dies fast,
+  // which is deliberate: its safety is supposed to come from staying inside its own escort, not
+  // from outrunning the player. hull 65 / shield 25 are low enough that focusing it is a real
+  // option even mid-fight, unlike the tankier support piece (Carrier) it shares a "kill this
+  // first" reading with. Its own weapon is nominal — 5 damage, 90 fireRange, matching Carrier's
+  // "weak point-defence fire only" flavour — because the build-defining number here is the aura,
+  // not the gun.
+  warden: {
+    id: 'warden',
+    displayName: 'Warden',
+    hull: 65,
+    shield: 25,
+    radius: 2.2,
+    speed: 70,
+    turnRate: 1.6,
+    engageRange: 150,
+    fireRange: 90,
+    fireInterval: 1.8,
+    damage: 5,
+    ...reward(2.8),
+    armorArc: 0,
+    armorReduction: 0,
+    threat: 2.8,
+  },
 };
 
-/** Roughly threat-ascending, matching the DESIGN.md §10 table order. */
+/**
+ * Roughly threat-ascending, matching the DESIGN.md §10 table order. `warden` (threat 2.8) and
+ * `mortar` (threat 3.5) are new additions appended after their nearest threat-tier neighbours
+ * rather than slotted in to preserve strict ascending order — the existing list already isn't
+ * strict (`mineLayer` at threat 3 sits after `carrier` at threat 5), so this matches the
+ * established convention of "roughly," not a regression.
+ */
 export const ENEMY_ORDER: readonly EnemyTypeId[] = [
   'waspDrone',
   'interceptor',
+  'warden',
   'lancer',
   'bulwark',
   'carrier',
   'mineLayer',
+  'mortar',
 ];
 
 export function getEnemyDef(id: EnemyTypeId): EnemyDef {
@@ -483,6 +559,79 @@ function buildMineLayerGeometry(): THREE.BufferGeometry {
   return mergeParts([segFront, segMid, segRear, linkA, linkB, podL, podR]);
 }
 
+function buildMortarGeometry(): THREE.BufferGeometry {
+  const p = palette();
+
+  // Low, wide drum — a base built to sit, not to fly gracefully. This is the silhouette's
+  // whole argument: closing the distance is viable because a Mortar cannot outrun anything.
+  const base = new THREE.CylinderGeometry(1.6, 2.0, 1.1, 8);
+  paint(base, p.enemyHull);
+
+  // The tube itself: canted up and back, well off the hull's own forward axis, so from any
+  // angle it reads as "artillery piece," not "fighter with a big gun."
+  const barrel = new THREE.CylinderGeometry(0.3, 0.46, 3.2, 8);
+  barrel.rotateX(1.15);
+  barrel.translate(0, 1.35, 1.05);
+  paint(barrel, p.enemyHull);
+
+  // Glowing charge cell at the breech — the light that should read brighter through the
+  // telegraph, matching the "muzzle glows before it fires" tell the Lancer already uses.
+  const breech = new THREE.IcosahedronGeometry(0.48, 0);
+  breech.translate(0, 0.95, 1.55);
+  paint(breech, p.enemyAccent);
+
+  // Three splayed legs at 120° spacing sell "braced, planted" even though the unit flies —
+  // the same "will not move" promise the base drum makes.
+  const parts: THREE.BufferGeometry[] = [base, barrel, breech];
+  for (let i = 0; i < 3; i++) {
+    const leg = new THREE.BoxGeometry(0.26, 0.26, 2.1);
+    leg.translate(0, 0, 1.05);
+    leg.rotateX(0.6);
+    leg.translate(0, -0.8, 0.35);
+    leg.rotateY((i * Math.PI * 2) / 3);
+    paint(leg, p.enemyHull);
+    parts.push(leg);
+  }
+
+  return mergeParts(parts);
+}
+
+function buildWardenGeometry(): THREE.BufferGeometry {
+  const p = palette();
+
+  // Round hull core — every other archetype in the roster is built from angular primitives
+  // (faceted cones, deltas, boxy plating); a sphere reads as categorically different at a
+  // glance, which is the point: this is the one ship in a group that is not built to fight.
+  const core = new THREE.SphereGeometry(0.85, 10, 8);
+  paint(core, p.enemyHull);
+
+  // A halo standing in the hull's own natural plane (no rotation applied, unlike the flat elite
+  // aura ring) so it faces whatever is looking at the ship head-on — the "it is broadcasting
+  // something" tell, visible in the same view a pilot already uses to read the silhouette.
+  const halo = new THREE.TorusGeometry(1.5, 0.07, 8, 24);
+  paint(halo, p.enemyAccent);
+
+  // Three radiator/emitter paddles at 120° spacing, each capped with a bright tip — the
+  // "satellite," not "starfighter," read, and the same "eye lands on the accent" trick Wasp
+  // Drone's core and Interceptor's wingtips use.
+  const parts: THREE.BufferGeometry[] = [core, halo];
+  for (let i = 0; i < 3; i++) {
+    const paddle = new THREE.BoxGeometry(1.4, 0.06, 0.55);
+    paddle.translate(1.05, 0, 0);
+    paddle.rotateY((i * Math.PI * 2) / 3);
+    paint(paddle, p.enemyHull);
+    parts.push(paddle);
+
+    const tip = new THREE.IcosahedronGeometry(0.22, 0);
+    tip.translate(1.7, 0, 0);
+    tip.rotateY((i * Math.PI * 2) / 3);
+    paint(tip, p.enemyAccent);
+    parts.push(tip);
+  }
+
+  return mergeParts(parts);
+}
+
 const GEOMETRY_BUILDERS: Readonly<Record<EnemyTypeId, () => THREE.BufferGeometry>> = {
   waspDrone: buildWaspDroneGeometry,
   interceptor: buildInterceptorGeometry,
@@ -490,6 +639,8 @@ const GEOMETRY_BUILDERS: Readonly<Record<EnemyTypeId, () => THREE.BufferGeometry
   bulwark: buildBulwarkGeometry,
   carrier: buildCarrierGeometry,
   mineLayer: buildMineLayerGeometry,
+  mortar: buildMortarGeometry,
+  warden: buildWardenGeometry,
 };
 
 /* ------------------------------------------------------------------------------------------ */

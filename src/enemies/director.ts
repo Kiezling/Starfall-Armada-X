@@ -69,6 +69,19 @@ function archetypeUnlocked(id: EnemyTypeId, run: RunState): boolean {
     // the roster it spawns.
     case 'carrier':
       return run.sector >= 1 || globalWave >= 6;
+    // Paired with Lancer's tier: both are stand-off archetypes whose whole identity is a
+    // ranged threat you can't just dogfight, so it makes sense for a player to meet the second
+    // one shortly after the first rather than being introduced to the entire "kiting" family in
+    // one wave.
+    case 'warden':
+      return globalWave >= 3;
+    // Paired with Bulwark's tier — both are "advanced" threats that change how a fight is
+    // fought rather than just adding DPS, so neither should appear before a player has the rest
+    // of the core roster (and its counters) down. Kept out of sector 0 entirely at the low end:
+    // a Mortar punishing a player for camping only teaches the right lesson once camping was
+    // ever a viable response to something, which isn't true in the opening waves.
+    case 'mortar':
+      return globalWave >= 4;
     default:
       return true;
   }

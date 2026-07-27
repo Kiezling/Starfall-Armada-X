@@ -22,6 +22,66 @@ export const ARENA = {
   minSpawnDistanceFromPlayer: 140,
 } as const;
 
+/* Hazard interaction ------------------------------------------------------------------------- */
+/*
+ * Debris Belt asteroids (see `render/arena.ts`'s asteroid collision/destruction API) are
+ * collidable and destructible data, wired up against the player in `game.ts`'s
+ * `checkAsteroidRam` (ramming) and `combatCtx.blockedByTerrain` (shooting). These are the
+ * numbers that turn "a rock stops your shots" into "a rock is a thing you can crash into or
+ * shoot apart."
+ */
+
+export const HAZARD = {
+  /**
+   * Player collision radius used for the ram sweep. Matches the 4.2-unit hull radius
+   * `combat/projectiles.ts`'s `collideEnemyShot` already uses for "did an enemy shot hit the
+   * player" — one ship, one collision size, rather than two numbers that could drift apart.
+   */
+  playerRamRadius: 4.2,
+  /**
+   * Minimum closing speed (units/s) for a rock collision to count as a "ram" rather than a
+   * graze. Below this, `checkAsteroidRam` still corrects position and velocity so the ship
+   * never ends a step embedded in or tunnelled through the mesh — it just skips damage, hit-
+   * stop, and camera trauma. `PLAYER.baseSpeed` is 115, so 25 is a bit over a fifth of cruise:
+   * low enough that flying close alongside a rock, or drifting to a stop beside one, stays
+   * safe, while anything closer to real closing speed counts as an actual hit.
+   */
+  ramMinSpeed: 25,
+  /**
+   * Player hull damage per unit of closing speed above `ramMinSpeed`. A ram at full boosted
+   * speed (`PLAYER.baseSpeed` 115 * `boostMultiplier` 1.85 ≈ 213) deals
+   * (213 - 25) * 0.4 ≈ 75 damage — a near-fatal hit on the 100-point baseline hull
+   * (`ship/hulls.ts`), which is the point: ramming a boulder at full boost should read as
+   * reckless. A routine bump at 60 units/s costs (60 - 25) * 0.4 = 14 — on par with a single
+   * enemy hit, not a death sentence.
+   */
+  ramDamagePerSpeed: 0.4,
+  /**
+   * Rock damage per unit of closing speed above `ramMinSpeed`. Higher than
+   * `ramDamagePerSpeed` — the player's own hull is the side meant to hurt more — so that a
+   * full-boost ram can actually break even the toughest rock in one hit: rocks carry 40-95 HP
+   * (`ASTEROID_HP_MIN`/`MAX` in `render/arena.ts`), and (213 - 25) * 0.55 ≈ 103 clears that
+   * whole range in a single full-speed collision.
+   */
+  ramDamagePerSpeedToRock: 0.55,
+  /**
+   * Fraction of the killed inward speed added back as an outward nudge on a ram, so the ship
+   * visibly separates from the rock instead of reading as merely stopped dead against it. Kept
+   * small — a hard elastic bounce off a rigid rock at these speeds reads as a physics bug, not
+   * an impact.
+   */
+  ramBounce: 0.18,
+  /**
+   * Flat damage a single player-fired shot deals to whatever rock stops it (applied from
+   * `game.ts`'s `blockedByTerrain` callback — see that field's inline comment for why this
+   * can't be scaled by the shot's actual weapon damage without a `combat/projectiles.ts`
+   * change). Sized so a rock (40-95 HP) breaks in 3-7 hits from a single gun regardless of
+   * weapon choice: 40 / 14 ≈ 3, 95 / 14 ≈ 7 — enough that "shoot the cover apart" is a real
+   * mid-fight option, not a chore.
+   */
+  rockShotDamage: 14,
+} as const;
+
 /* Simulation limits ------------------------------------------------------------------------- */
 
 export const LIMITS = {
@@ -97,6 +157,19 @@ export const PLAYER = {
   invulnTime: 0.6,
   /** Seconds out of combat before shields start recharging. */
   shieldDelay: 3.5,
+
+  /**
+   * Ion Storm EMP fronts (`Arena.isInEmpField`) suppress shield regen entirely and drain
+   * whatever charge remains at this rate (units/s) instead — see `PlayerSystem.updateShield`.
+   * A full shield (the 50-point baseline every hull shares — see `ship/hulls.ts`'s
+   * `BASE_MAX_SHIELD`) drains in 50 / 35 ≈ 1.43s, landing in the "roughly a second or two"
+   * target: long enough that sitting in or fighting inside a front costs the whole bar, short
+   * enough that it is a real threat rather than background radiation. A straight-line pass
+   * through one front's ~26-unit-thick band (`EMP_THICKNESS` in `render/arena.ts`) at cruise
+   * (`baseSpeed` 115) only spends 26 / 115 ≈ 0.23s inside it, costing 0.23 * 35 ≈ 8 shield — a
+   * real but partial toll, so flying through fast is meaningfully cheaper than lingering.
+   */
+  empShieldDrainRate: 35,
 
   /**
    * Heat model arithmetic, derived from the base loadout (Pulse Repeater — "the baseline

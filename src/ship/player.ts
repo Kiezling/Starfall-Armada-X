@@ -111,6 +111,14 @@ export class PlayerSystem {
   private secondWindUsed = false;
   /** Latches so the low-hull warning fires on the threshold crossing, not every frame. */
   private lowHullWarned = false;
+  /**
+   * True while the player sits inside an active Ion Storm EMP front (`Arena.isInEmpField`).
+   * Set once per step from game.ts, ahead of `update` — see `setEmpSuppressed`. Not on
+   * `PlayerState`: this is transient per-step input to the simulation, exactly like the
+   * `trackDir`/`trackStrength` arguments `FlightModel.update` takes, not persisted run state,
+   * and nothing outside this class needs to read it.
+   */
+  private empSuppressed = false;
 
   constructor(state: PlayerState, events: EventBus) {
     this.state = state;
@@ -151,6 +159,17 @@ export class PlayerSystem {
 
   consumeBattery(): void {
     this.battery = 0;
+  }
+
+  /**
+   * Called once per simulation step from game.ts, before `update`, with whatever
+   * `Arena.isInEmpField(player.position)` returned for this step. Ion Storm's EMP fronts were
+   * otherwise presentation-only (see that method's doc comment in render/arena.ts) — this is
+   * the one piece of wiring that turns "a wave sweeps past" into "shields do not work in
+   * here." See `updateShield` for what suppression actually does.
+   */
+  setEmpSuppressed(active: boolean): void {
+    this.empSuppressed = active;
   }
 
   /* Per-step -------------------------------------------------------------------------------- */
@@ -212,6 +231,28 @@ export class PlayerSystem {
   private updateShield(dt: number): void {
     const p = this.state;
     const max = p.stats.maxShield;
+
+    if (this.empSuppressed) {
+      // Regen is fully suspended (not merely slowed — DESIGN's "shields do not work inside
+      // them" is a hard rule, not a debuff) and whatever charge remains bleeds off at
+      // PLAYER.empShieldDrainRate. A drain rather than an instant zero-out is deliberate: it
+      // gives the player time to fly out of the ~26-unit band before losing everything (see
+      // that constant's doc comment for the arithmetic), so the front punishes lingering or
+      // fighting inside it far more than a fast pass through.
+      if (p.shield > 0) {
+        p.shield = Math.max(0, p.shield - PLAYER.empShieldDrainRate * dt);
+        if (p.shield <= 0) {
+          // Reuses the same "shields just hit zero" event a combat break fires — it is exactly
+          // that, mechanically, and it is the strongest existing player-facing signal (ripple
+          // FX, sound, camera trauma) available without a core/types.ts change. See this
+          // system's accompanying report for the dedicated EMP-state event/HUD hook that would
+          // let the HUD show suppression continuously rather than only at the zero-crossing.
+          this.events.emit('player:shieldBreak', { x: p.position.x, y: p.position.y, z: p.position.z });
+        }
+      }
+      return;
+    }
+
     if (p.shield >= max) return;
     if (p.timeSinceDamage < p.def.shieldDelay) return;
 
@@ -404,6 +445,7 @@ export class PlayerSystem {
     this.battery = 0;
     this.secondWindUsed = false;
     this.lowHullWarned = false;
+    this.empSuppressed = false;
   }
 
   /** Wraith only: swap the active primary with the stowed one. */
