@@ -189,6 +189,9 @@ export class Game {
    * allows.
    */
   private readonly prevPlayerPos = new THREE.Vector3();
+  /** Mirrors what was last handed to PlayerSystem.setEmpSuppressed, purely so the HUD view
+   * model can report it without re-querying the arena a second time each frame. */
+  private empSuppressed = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -670,7 +673,8 @@ export class Game {
       // step, which is what reads it. Queried off last step's position — one step of staleness
       // at 60Hz, same as everything else here that reads `player.position` before this step's
       // flight.update has moved it (targeting, aim assist).
-      this.playerSystem.setEmpSuppressed(this.arena.isInEmpField(player.position));
+      this.empSuppressed = this.arena.isInEmpField(player.position);
+      this.playerSystem.setEmpSuppressed(this.empSuppressed);
       this.playerSystem.update(dt);
 
       // Targeting resolves *before* flight: the tracking assist steers toward the intercept
@@ -1221,6 +1225,7 @@ export class Game {
     driftReady: true, driftCooldownFraction: 0,
     boundaryWarning: 0,
     lowHull: false,
+    empSuppressed: false,
   };
 
   private buildHudViewModel(hullFraction: number): HudViewModel {
@@ -1251,6 +1256,7 @@ export class Game {
     vm.driftCooldownFraction = clamp01(player.driftCooldown / Math.max(0.001, player.def.driftCooldown || PLAYER.driftCooldown));
     vm.boundaryWarning = this.boundaryWarning;
     vm.lowHull = hullFraction < 0.25;
+    vm.empSuppressed = this.empSuppressed;
 
     return vm;
   }

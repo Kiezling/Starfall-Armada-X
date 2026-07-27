@@ -225,6 +225,13 @@ export interface HullDef {
   /** Seconds out of combat before shields begin regenerating. */
   readonly shieldDelay: number;
   readonly shieldRegen: number;
+  /**
+   * Hull points regenerated per second while out of combat, gated on the same `shieldDelay`
+   * window shields use. Deliberately an order of magnitude below `shieldRegen`: shields are
+   * the renewable buffer and hull is the attrition clock, so this exists to stop a run dying
+   * by a thousand chip hits between bosses, not to make hull damage free.
+   */
+  readonly hullRegen: number;
   readonly maxSpeed: number;
   readonly acceleration: number;
   readonly turnRate: number;
@@ -370,6 +377,12 @@ export interface PlayerStats {
   homingBonus: number;
   /** Salvage pickup radius multiplier. */
   magnetMult: number;
+  /**
+   * Multiplier on the hull's out-of-combat hull regeneration (see `HullDef.hullRegen`). Kept
+   * as a multiplier rather than a flat adder so a hull that deliberately regenerates nothing
+   * stays at zero no matter how many augments stack onto it — the hull's identity wins.
+   */
+  hullRegenMult: number;
   /** Extra secondary charges. */
   secondaryCharges: number;
   secondaryCooldownMult: number;
@@ -577,6 +590,19 @@ export interface GameEvents {
   'player:died': Record<string, never>;
   'player:overheat': Record<string, never>;
   'player:vented': Record<string, never>;
+  /**
+   * Edge-triggered: fires only when the player enters or leaves an Ion Storm EMP front, not
+   * every step inside one. The HUD needs to latch a persistent "shields offline" state, and a
+   * per-step event would make that a redraw-per-frame instead of two class toggles.
+   */
+  'player:empSuppressed': { active: boolean };
+
+  /**
+   * `kind` mirrors PickupKind's numeric values (0 hull repair, 1 salvage, 2 overcharge) rather
+   * than importing the enum, because core/types.ts is the leaf of the module graph and must
+   * not depend on a system that imports it.
+   */
+  'pickup:collected': { kind: number; amount: number; x: number; y: number; z: number };
 
   'enemy:spawned': { id: number; typeId: EnemyTypeId; isElite: boolean };
   'enemy:damaged': { id: number; amount: number; crit: boolean; x: number; y: number; z: number };

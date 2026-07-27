@@ -50,7 +50,7 @@ const INTENSITY_FALL_SMOOTHING = 0.25;
  * fresh run should meet the swarm before it meets the thing that spawns more swarm. Once the
  * run has looped (`threatLevel > 0`) everything is already familiar, so the gate lifts.
  */
-function archetypeUnlocked(id: EnemyTypeId, run: RunState): boolean {
+export function archetypeUnlocked(id: EnemyTypeId, run: RunState): boolean {
   if (run.threatLevel > 0) return true;
   const globalWave = run.sector * RUN.encountersPerSector + run.wave;
   switch (id) {

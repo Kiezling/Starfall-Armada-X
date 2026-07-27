@@ -1393,6 +1393,121 @@ function testEmpSuppression(): void {
   );
 }
 
+/**
+ * Hull regeneration exists to stop a run dying of a thousand chip hits between bosses, so the
+ * properties that matter are: it is gated on the same out-of-combat window shields use, it is
+ * slow enough that it never trivialises a bad fight, and — the one that is easy to get wrong —
+ * it keeps running inside an EMP front, because the Ion Storm's advertised rule is about
+ * shields and a silent second penalty on hull would be a rule the player was never told.
+ */
+function testHullRegen(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  player.hull = player.stats.maxHull * 0.5;
+
+  // In combat (inside shieldDelay): nothing should come back.
+  player.timeSinceDamage = 0;
+  const inCombat = player.hull;
+  playerSystem.update(1 / 60);
+  check(
+    'hull does not regenerate while still in combat',
+    player.hull === inCombat,
+    `hull ${inCombat.toFixed(3)} -> ${player.hull.toFixed(3)}`,
+  );
+
+  // Out of combat: it ticks at exactly def.hullRegen * stats.hullRegenMult.
+  player.timeSinceDamage = 999;
+  const before = player.hull;
+  playerSystem.update(1 / 60);
+  const expected = player.def.hullRegen * player.stats.hullRegenMult * (1 / 60);
+  check(
+    'hull regenerates out of combat at hullRegen * hullRegenMult',
+    Math.abs(player.hull - before - expected) < 1e-6,
+    `hull ${before.toFixed(4)} -> ${player.hull.toFixed(4)} (expected +${expected.toFixed(5)})`,
+  );
+
+  // It must never overshoot the cap.
+  player.hull = player.stats.maxHull - 0.001;
+  for (let i = 0; i < 120; i++) playerSystem.update(1 / 60);
+  check(
+    'hull regeneration never exceeds max hull',
+    player.hull === player.stats.maxHull,
+    `hull=${player.hull.toFixed(4)} max=${player.stats.maxHull.toFixed(4)}`,
+  );
+
+  // EMP suppression is a shield rule, not a hull rule.
+  player.hull = player.stats.maxHull * 0.5;
+  player.timeSinceDamage = 999;
+  playerSystem.setEmpSuppressed(true);
+  const beforeEmp = player.hull;
+  playerSystem.update(1 / 60);
+  check(
+    'hull still regenerates inside an EMP front — suppression only governs shields',
+    player.hull > beforeEmp,
+    `hull ${beforeEmp.toFixed(4)} -> ${player.hull.toFixed(4)}`,
+  );
+  playerSystem.setEmpSuppressed(false);
+
+  // A hull that opts out of regeneration stays opted out however the stats stack.
+  const vireo = createPlayerState({
+    hullId: 'vireo',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  check(
+    'every hull declares a non-negative hullRegen, and Bastion out-repairs Vireo',
+    vireo.def.hullRegen >= 0 && vireo.def.hullRegen < player.def.hullRegen,
+    `vireo=${vireo.def.hullRegen} starfall=${player.def.hullRegen}`,
+  );
+}
+
+/**
+ * `player:empSuppressed` drives a latched HUD class, so it must be edge-triggered: one event on
+ * entering a front, one on leaving, and nothing at all for the many steps spent inside one.
+ * A level-triggered version would turn two DOM toggles into a redraw every frame.
+ */
+function testEmpEventIsEdgeTriggered(): void {
+  const events = new TypedEventBus();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const playerSystem = new PlayerSystem(player, events);
+
+  let active = 0;
+  let inactive = 0;
+  events.on('player:empSuppressed', (e) => {
+    if (e.active) active++;
+    else inactive++;
+  });
+
+  // Ten steps inside a front, driven the way game.ts drives it: unconditionally, every step.
+  for (let i = 0; i < 10; i++) playerSystem.setEmpSuppressed(true);
+  check(
+    'entering an EMP front emits exactly one suppression event, not one per step',
+    active === 1 && inactive === 0,
+    `active=${active} inactive=${inactive}`,
+  );
+
+  for (let i = 0; i < 10; i++) playerSystem.setEmpSuppressed(false);
+  check(
+    'leaving an EMP front emits exactly one release event',
+    active === 1 && inactive === 1,
+    `active=${active} inactive=${inactive}`,
+  );
+}
+
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -1421,5 +1536,7 @@ export function runSelfTest(): TestResult[] {
   testHexardAddGating();
   testAsteroidRamming();
   testEmpSuppression();
+  testHullRegen();
+  testEmpEventIsEdgeTriggered();
   return results;
 }

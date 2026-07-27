@@ -687,6 +687,7 @@ export function createBaseStats(hull: HullDef, difficulty: Difficulty): PlayerSt
 
     homingBonus: 0,
     magnetMult: 1,
+    hullRegenMult: 1,
     secondaryCharges: 0,
     secondaryCooldownMult: 1,
     prototypeLuck: 0,

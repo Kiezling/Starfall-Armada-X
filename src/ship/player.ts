@@ -169,7 +169,12 @@ export class PlayerSystem {
    * here." See `updateShield` for what suppression actually does.
    */
   setEmpSuppressed(active: boolean): void {
+    // Edge-triggered, not level-triggered: the HUD latches a class off this, so emitting every
+    // step inside a front would turn two DOM toggles into a redraw per frame for no new
+    // information. Callers may call this unconditionally every step; the comparison is the gate.
+    if (active === this.empSuppressed) return;
     this.empSuppressed = active;
+    this.events.emit('player:empSuppressed', { active });
   }
 
   /* Per-step -------------------------------------------------------------------------------- */
@@ -187,6 +192,7 @@ export class PlayerSystem {
 
     this.updateHeat(dt);
     this.updateShield(dt);
+    this.updateHullRegen(dt);
 
     if (p.primaryCooldown > 0) p.primaryCooldown -= dt;
     if (p.secondaryCooldown > 0) p.secondaryCooldown -= dt;
@@ -243,10 +249,9 @@ export class PlayerSystem {
         p.shield = Math.max(0, p.shield - PLAYER.empShieldDrainRate * dt);
         if (p.shield <= 0) {
           // Reuses the same "shields just hit zero" event a combat break fires — it is exactly
-          // that, mechanically, and it is the strongest existing player-facing signal (ripple
-          // FX, sound, camera trauma) available without a core/types.ts change. See this
-          // system's accompanying report for the dedicated EMP-state event/HUD hook that would
-          // let the HUD show suppression continuously rather than only at the zero-crossing.
+          // that, mechanically, and it carries the ripple FX, sound and camera trauma that make
+          // the moment unmissable. The *continuous* "you are being suppressed" signal is a
+          // separate concern, carried by `player:empSuppressed` from setEmpSuppressed above.
           this.events.emit('player:shieldBreak', { x: p.position.x, y: p.position.y, z: p.position.z });
         }
       }
@@ -257,6 +262,25 @@ export class PlayerSystem {
     if (p.timeSinceDamage < p.def.shieldDelay) return;
 
     p.shield = Math.min(max, p.shield + p.def.shieldRegen * p.stats.shieldRegenMult * dt);
+  }
+
+  /**
+   * Out-of-combat hull regeneration.
+   *
+   * Shares `shieldDelay` as its gate rather than owning a second timer: the player already
+   * reads that window off the shield bar recovering, so hull creeping up at the same moment
+   * teaches itself with no new UI. Unlike shields this is *not* suppressed inside an EMP front
+   * — the Ion Storm's rule is specifically about shields, and having it also silently stop hull
+   * repair would be a second, invisible penalty for the same hazard.
+   */
+  private updateHullRegen(dt: number): void {
+    const p = this.state;
+    const rate = p.def.hullRegen * p.stats.hullRegenMult;
+    if (rate <= 0) return;
+    if (p.hull >= p.stats.maxHull) return;
+    if (p.timeSinceDamage < p.def.shieldDelay) return;
+
+    p.hull = Math.min(p.stats.maxHull, p.hull + rate * dt);
   }
 
   /* Damage and healing ------------------------------------------------------------------------ */

@@ -210,6 +210,29 @@ button {
   animation: hud-pulse 1s ease-in-out infinite;
 }
 
+/* EMP suppression: like the low-hull treatment, never colour alone — the bar is struck through
+   with a hazard hatch and the label says what is happening, so it cannot be confused with the
+   ordinary post-damage shield delay. Faster pulse than hud-stat--low because this state is
+   escapable by flying, and the urgency is "move", not "be careful". */
+.hud-stat--emp .hud-bar-track {
+  border-color: var(--cat-systems);
+  border-width: 2px;
+}
+.hud-stat--emp .hud-bar-fill {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cat-systems) 0 6px,
+    transparent 6px 12px
+  );
+}
+.hud-stat--emp .hud-stat-name::after {
+  content: ' \2014 SUPPRESSED';
+  color: var(--cat-systems);
+}
+.hud-stat--emp {
+  animation: hud-pulse 0.6s ease-in-out infinite;
+}
+
 .hud-bar--venting .hud-bar-fill {
   background: repeating-linear-gradient(
     45deg,
@@ -1489,6 +1512,12 @@ button {
   box-shadow: none !important;
 }
 .reduce-flash .hud-stat--low .hud-bar-fill {
+  opacity: 1 !important;
+}
+/* Same guarantee for the EMP state: the hatch pattern and the SUPPRESSED label carry the
+   meaning on their own, so killing the pulse costs no information. */
+.reduce-flash .hud-stat--emp,
+.reduce-flash .hud-stat--emp .hud-bar-fill {
   opacity: 1 !important;
 }
 
