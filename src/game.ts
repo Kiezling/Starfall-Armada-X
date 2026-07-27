@@ -64,7 +64,7 @@ import { WeaponSystem, getWeapon } from './combat/weapons';
 import { TargetingSystem } from './combat/targeting';
 
 import { EnemyManager } from './enemies/manager';
-import { BossEncounter } from './enemies/bosses';
+import { BossEncounter, CombinedEnemyQuery } from './enemies/bosses';
 import type { BossContext } from './enemies/bosses';
 import type { PlayerState } from './core/types';
 import { WaveDirector } from './enemies/director';
@@ -133,6 +133,11 @@ export class Game {
   private readonly projectiles: ProjectileSystem;
   private readonly weapons: WeaponSystem;
   private readonly targeting = new TargetingSystem();
+  /**
+   * The enemy roster as *targeting* sees it: the pooled enemies plus whichever boss is currently
+   * targetable. Built in the constructor once `enemies` and `bosses` both exist.
+   */
+  private targetQuery!: CombinedEnemyQuery;
   private readonly enemies: EnemyManager;
   private readonly director: WaveDirector;
   private readonly bosses: BossEncounter;
@@ -280,9 +285,25 @@ export class Game {
       },
     };
 
+    this.targetQuery = new CombinedEnemyQuery(this.enemies, this.bosses);
+
     this.targetView = {
       count: 0,
       get: (i, outPos) => {
+        // Ordinals past the live pooled enemies address the boss, which `simulate` accounts for
+        // when it sets `count`. Without this the boss has no radar blip and no off-screen arrow,
+        // so a mobile boss that leaves the frame — Vashkan, mostly — becomes unfindable.
+        if (i >= this.enemies.liveCount) {
+          const boss = this.bosses.targetableEnemy;
+          if (!boss) return null;
+          outPos.copy(boss.position);
+          return {
+            id: boss.id,
+            isElite: false,
+            isFiring: boss.telegraph > 0,
+            hullFraction: this.bosses.hullFraction,
+          };
+        }
         // `i` here is a plain ordinal over `[0, count)` (see the loop in hud.ts's
         // `updateTracking`), not a permanent enemy-pool slot identity — `getByIndex` expects the
         // latter (it's what spatial-grid queries return) and silently drops or mis-resolves most
@@ -603,7 +624,7 @@ export class Game {
     const speed = getWeapon(player.primary).projectileSpeed * player.stats.projectileSpeedMult;
     // Beams and other hitscan weapons report zero speed; aim them straight at the target.
     const leadSpeed = speed > 0 ? speed : 1e6;
-    if (!this.targeting.getLeadPoint(trackPoint, leadSpeed, this.enemies)) return null;
+    if (!this.targeting.getLeadPoint(trackPoint, leadSpeed, this.targetQuery)) return null;
 
     trackDir.copy(trackPoint).sub(player.position);
     const dist = trackDir.length();
@@ -623,9 +644,14 @@ export class Game {
 
       // Targeting resolves *before* flight: the tracking assist steers toward the intercept
       // point, so it has to be this step's point, not last step's.
-      this.targeting.update(player, this.enemies, this.enemies.liveCount, this.render.camera, this.settings, dt);
+      // Everything targeting-facing reads `targetQuery`, not `enemies`. Bosses live outside the
+      // pooled enemy system entirely — BossEncounter tests projectiles itself — so targeting was
+      // never handed anything that contained one, which is why bosses could not be locked or
+      // aim-assisted at all. The adapter presents the live boss through the same EnemyQuery
+      // shape, so targeting.ts needs no knowledge that bosses are a separate object model.
+      this.targeting.update(player, this.targetQuery, this.enemies.liveCount, this.render.camera, this.settings, dt);
       if (this.input.wasPressed('cycleTarget')) {
-        this.targeting.cycle(player, this.enemies, this.enemies.liveCount, this.render.camera);
+        this.targeting.cycle(player, this.targetQuery, this.enemies.liveCount, this.render.camera);
       }
       player.lockedTargetId = this.targeting.lockedId;
 
@@ -657,7 +683,7 @@ export class Game {
       this.targeting.applyAimAssist(
         aimDir,
         player.position,
-        this.enemies,
+        this.targetQuery,
         this.enemies.liveCount,
         this.settings,
         primarySpeed,
@@ -1076,7 +1102,10 @@ export class Game {
         this.bosses.phase,
         this.bosses.phaseCount,
       );
-      this.targetView.count = this.enemies.liveCount;
+      // One extra ordinal when a boss is targetable — `targetView.get` maps anything at or past
+      // `liveCount` onto it, so the boss gets a radar blip and an off-screen arrow like any
+      // other hostile.
+      this.targetView.count = this.enemies.liveCount + (this.bosses.targetableEnemy ? 1 : 0);
       this.hud.updateTracking(
         player.position,
         player.quaternion,
