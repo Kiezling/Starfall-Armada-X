@@ -21,10 +21,10 @@ import {
   type Projectile,
   type WeaponId,
 } from '../core/types';
-import { LIMITS } from '../core/constants';
+import { LIMITS, PLAYER } from '../core/constants';
 import { Pool } from '../core/pool';
 import { distSq, sweptSphereHit } from '../core/math';
-import { enemyProjectileColor, playerProjectileColor } from '../render/palette';
+import { enemyProjectileColor, palette, playerProjectileColor } from '../render/palette';
 
 export interface ProjectileSpawnParams {
   kind: ProjectileKind;
@@ -86,6 +86,7 @@ const scaleVec = /*#__PURE__*/ new THREE.Vector3();
 const dirVec = /*#__PURE__*/ new THREE.Vector3();
 const posVec = /*#__PURE__*/ new THREE.Vector3();
 const colorTmp = /*#__PURE__*/ new THREE.Color();
+const hotColorTmp = /*#__PURE__*/ new THREE.Color();
 const UP = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
 const FORWARD_Y = /*#__PURE__*/ new THREE.Vector3(0, 1, 0);
 
@@ -103,6 +104,8 @@ export class ProjectileSystem {
 
   private readonly queryResults = new Int32Array(LIMITS.maxQueryResults);
   private nearestEnemyShot = Infinity;
+  /** Shared tint for all live player fire, derived from the current gun heat once per step. */
+  private playerHeatTint = 0;
 
   /** Reused spawn record for forked children, so forking allocates nothing. */
   private readonly forkParams: ProjectileSpawnParams;
@@ -260,6 +263,11 @@ export class ProjectileSystem {
     const pool = this.projectiles;
     const maxRange = ctx.arenaRadius + 120;
     const player = ctx.player;
+    // The bolts are the one heat cue that naturally stays near the target, where the player is
+    // already looking. Squaring the fraction keeps the weapon's base colour readable at low heat,
+    // then drives it rapidly toward the active palette's danger colour over the final third.
+    const heatFraction = Math.max(0, Math.min(1, player.heat / PLAYER.heatMax));
+    this.playerHeatTint = heatFraction * heatFraction;
 
     // Backwards, because releasing swaps the last live item into the freed slot.
     for (let i = pool.size - 1; i >= 0; i--) {
@@ -507,6 +515,8 @@ export class ProjectileSystem {
     const pool = this.projectiles;
     let playerCount = 0;
     let enemyCount = 0;
+    const pColors = palette();
+    hotColorTmp.setHex(pColors.hudDanger);
 
     for (let i = 0; i < pool.size; i++) {
       const p = pool.items[i]!;
@@ -526,15 +536,30 @@ export class ProjectileSystem {
         matrix.compose(posVec, quat, scaleVec);
         this.playerMesh.setMatrixAt(playerCount, matrix);
         colorTmp.setHex(playerProjectileColor(p.colorIndex));
+        // Default mode reaches a literal red; accessibility palettes reach their own semantic
+        // danger colour, preserving the cue for players who cannot reliably distinguish red.
+        colorTmp.lerp(hotColorTmp, this.playerHeatTint * 0.9);
         this.playerMesh.setColorAt(playerCount, colorTmp);
         playerCount++;
       } else {
         quat.identity();
-        const s = p.scale * p.radius;
+        let s = p.scale * p.radius;
+        colorTmp.setHex(enemyProjectileColor(p.colorIndex));
+
+        if (p.kind === ProjectileKind.Mine) {
+          const age = Math.max(0, p.maxLife - p.life);
+          const armFraction = Math.min(1, age);
+          const pulseWave = 0.5 + Math.sin(age * 9) * 0.5;
+          // During arming the orb grows from visibly dormant to full hazard size. Once armed it
+          // continues a strong rhythmic pulse, so a stationary mine cannot read as a collectible.
+          s *= 0.72 + armFraction * 0.48 + (armFraction >= 1 ? pulseWave * 0.22 : 0);
+          hotColorTmp.setHex(armFraction >= 1 ? pColors.telegraphLethal : pColors.telegraphAimed);
+          colorTmp.lerp(hotColorTmp, armFraction >= 1 ? 0.42 + pulseWave * 0.35 : armFraction * 0.45);
+        }
+
         scaleVec.set(s, s, s);
         matrix.compose(posVec, quat, scaleVec);
         this.enemyMesh.setMatrixAt(enemyCount, matrix);
-        colorTmp.setHex(enemyProjectileColor(p.colorIndex));
         this.enemyMesh.setColorAt(enemyCount, colorTmp);
         enemyCount++;
       }
@@ -557,6 +582,7 @@ export class ProjectileSystem {
     this.playerMesh.count = 0;
     this.enemyMesh.count = 0;
     this.nearestEnemyShot = Infinity;
+    this.playerHeatTint = 0;
   }
 
   dispose(): void {
