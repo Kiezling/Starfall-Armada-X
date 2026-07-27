@@ -32,8 +32,12 @@ import { FlightModel, lookRotation } from './ship/flight';
 import { createPlayerState, PlayerSystem } from './ship/player';
 import type { InputAction, InputState } from './core/types';
 import { TargetingSystem } from './combat/targeting';
+import type { EnemyQuery } from './combat/projectiles';
+import { ProjectileSystem } from './combat/projectiles';
 import { PLAYER } from './core/constants';
 import { TypedEventBus } from './core/events';
+import { BossEncounter, CombinedEnemyQuery, type BossContext } from './enemies/bosses';
+import { Hexard } from './enemies/bosses/hexard';
 
 export interface TestResult {
   name: string;
@@ -1079,6 +1083,188 @@ function testLockAcquisitionDecaysWhenLookingAway(): void {
   );
 }
 
+/**
+ * Playtester feedback #5/#6: bosses were excluded from lock-on entirely (because they live
+ * outside the pooled `EnemyQuery` the targeting system reads from) and were small enough to be
+ * "too easy" to just sit and shoot. Covers the `CombinedEnemyQuery` adapter end-to-end — a real
+ * `TargetingSystem` completing a real dwell-based lock through it — plus the collision-radius
+ * bump each boss got.
+ */
+function testBossLockOnAndHitboxes(): void {
+  const events = new TypedEventBus();
+  const scene = new THREE.Scene();
+  const projectiles = new ProjectileSystem(scene, events);
+  const encounter = new BossEncounter(scene, events, projectiles);
+
+  const bossCtx: BossContext = {
+    projectiles,
+    events,
+    playerPos: new THREE.Vector3(0, 0, 0),
+    playerVel: new THREE.Vector3(),
+    playerAlive: true,
+    arenaRadius: 520,
+    elapsed: 0,
+    onTelegraph: () => {},
+  };
+
+  encounter.start('vashkan', 500, 520, 2);
+  check(
+    'a boss is not lock-on-eligible during its name-card intro',
+    encounter.targetableEnemy === null,
+    `targetableEnemy=${encounter.targetableEnemy}`,
+  );
+
+  encounter.update(bossCtx, 2.1); // outlasts the 2s intro in one step
+  check(
+    'Vashkan becomes lock-on-eligible once its intro ends',
+    encounter.targetableEnemy !== null,
+    `targetableEnemy=${encounter.targetableEnemy}`,
+  );
+  check(
+    'Vashkan hitbox increased to 20 world units (was 14) — more than doubles the hittable area',
+    encounter.current?.radius === 20,
+    `radius=${encounter.current?.radius}`,
+  );
+
+  const emptyPooledEnemies: EnemyQuery = { queryNear: () => 0, getByIndex: () => null, getById: () => null };
+  const combined = new CombinedEnemyQuery(emptyPooledEnemies, encounter);
+  const buf = new Int32Array(8);
+  const nearCount = combined.queryNear(0, 0, 0, 10000, buf);
+  check(
+    'CombinedEnemyQuery surfaces the boss to a scan even with zero pooled enemies alive',
+    nearCount === 1,
+    `nearCount=${nearCount}`,
+  );
+  const resolved = nearCount > 0 ? combined.getByIndex(buf[0]!) : null;
+  check(
+    'the resolved boss entry round-trips through getById by its own id',
+    resolved !== null && combined.getById(resolved.id) === resolved,
+    `resolved id=${resolved ? resolved.id : null}`,
+  );
+
+  // Feed the merged query into the real dwell-based TargetingSystem, exactly as game.ts's
+  // wiring change would, to confirm the whole path locks onto a boss and not just the adapter.
+  const targeting = new TargetingSystem();
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  player.position.set(0, 0, 0);
+  player.velocity.set(0, 0, 0);
+  encounter.current!.position.set(0, 0, -100); // dead ahead of the default (identity) facing
+  const settings = { aimAssist: 0 } as unknown as import('./core/types').Settings;
+  const step = 1 / 60;
+  let seconds = 0;
+  while (targeting.lockedId < 0 && seconds < 1.0) {
+    targeting.update(player, combined, 0, null as unknown as THREE.Camera, settings, step);
+    seconds += step;
+  }
+  check(
+    'TargetingSystem completes a real lock on a boss through CombinedEnemyQuery',
+    resolved !== null && targeting.lockedId === resolved.id,
+    `lockedId=${targeting.lockedId}, expected=${resolved?.id}, after ${seconds.toFixed(2)}s`,
+  );
+
+  encounter.clear();
+
+  encounter.start('hexard', 500, 520, 0);
+  check(
+    'Hexard hitbox increased to 32 world units (was 26)',
+    encounter.current?.radius === 32,
+    `radius=${encounter.current?.radius}`,
+  );
+  encounter.clear();
+
+  encounter.start('mawCore', 500, 520, 0);
+  check(
+    'Maw Core hitbox increased to 40 world units (was 34)',
+    encounter.current?.radius === 40,
+    `radius=${encounter.current?.radius}`,
+  );
+  encounter.clear();
+}
+
+/**
+ * Playtester feedback #19: Hexard's three "adds" should force a priority switch, and the boss
+ * should visibly (not just numerically) become hard-to-hurt while they live. Covers the whole
+ * gate: resistant-but-not-immune core damage while segments live, full damage once they're
+ * cleared, and that segments themselves are never discounted (or there would be nothing to
+ * prioritise).
+ */
+function testHexardAddGating(): void {
+  const events = new TypedEventBus();
+  const scene = new THREE.Scene();
+  const projectiles = new ProjectileSystem(scene, events);
+  const hexard = new Hexard();
+  hexard.spawn(scene, 1000, 520);
+  hexard.configureSegments(1000);
+
+  const bossCtx: BossContext = {
+    projectiles,
+    events,
+    playerPos: new THREE.Vector3(0, 0, -50),
+    playerVel: new THREE.Vector3(),
+    playerAlive: true,
+    arenaRadius: 520,
+    elapsed: 0,
+    onTelegraph: () => {},
+  };
+
+  hexard.update(bossCtx, 1 / 60); // one step so segment orbit offsets are established
+
+  check(
+    'segments do not gate core damage before phase 1 activates them',
+    !hexard.coreResistant,
+    `coreResistant=${hexard.coreResistant}`,
+  );
+
+  // Cross the phase-1 threshold (startsBelow: 0.66) the same way ordinary player damage would,
+  // rather than reaching into protected phase-machinery.
+  hexard.damage(400, bossCtx); // 1000 -> 600, at/below the 660 threshold
+  hexard.update(bossCtx, 1.3); // outlast the 1.2s post-transition invulnerability window
+
+  check(
+    'Hexard becomes core-resistant once its segment phase activates',
+    hexard.coreResistant,
+    `coreResistant=${hexard.coreResistant}, liveSegments=${hexard.liveSegments}`,
+  );
+
+  const hullBeforeResisted = hexard.hull;
+  hexard.damage(100, bossCtx);
+  const resistedLoss = hullBeforeResisted - hexard.hull;
+  check(
+    'core damage is reduced to ~12% while adds are alive (an 85-90% reduction band) — resistant, not immune',
+    resistedLoss > 0 && resistedLoss < 20,
+    `expected ~12, got ${resistedLoss.toFixed(2)}`,
+  );
+
+  // Kill every segment directly. Each pool is totalHull*0.18/3 = 60; 70 clears it with margin.
+  for (let i = 0; i < 3; i++) hexard.damageSegment(i, 70, bossCtx);
+  check('all three segments are dead after enough direct damage', hexard.liveSegments === 0, `liveSegments=${hexard.liveSegments}`);
+  check('the core stops being resistant once every add is down', !hexard.coreResistant, `coreResistant=${hexard.coreResistant}`);
+
+  const hullBeforeFull = hexard.hull;
+  hexard.damage(100, bossCtx);
+  const fullLoss = hullBeforeFull - hexard.hull;
+  check(
+    'core damage returns to its full value once the adds are cleared',
+    Math.abs(fullLoss - 100) < 1e-6,
+    `expected 100, got ${fullLoss.toFixed(2)}`,
+  );
+
+  // A dead segment must not be damageable twice, and a hit on a live segment must not also land
+  // on the core through the resistant-core path.
+  const hullBeforeDeadSegment = hexard.hull;
+  const killedWholeBoss = hexard.damageSegment(0, 1000, bossCtx);
+  check(
+    'damaging an already-dead segment is a no-op',
+    !killedWholeBoss && hexard.hull === hullBeforeDeadSegment,
+    `hull ${hullBeforeDeadSegment} -> ${hexard.hull}`,
+  );
+}
+
 export function runSelfTest(): TestResult[] {
   results.length = 0;
   testPalettes();
@@ -1103,5 +1289,7 @@ export function runSelfTest(): TestResult[] {
   testOverchargeVentsBypassesLockout();
   testLockAcquisitionDwell();
   testLockAcquisitionDecaysWhenLookingAway();
+  testBossLockOnAndHitboxes();
+  testHexardAddGating();
   return results;
 }
