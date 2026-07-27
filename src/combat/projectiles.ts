@@ -536,6 +536,9 @@ export class ProjectileSystem {
         matrix.compose(posVec, quat, scaleVec);
         this.playerMesh.setMatrixAt(playerCount, matrix);
         colorTmp.setHex(playerProjectileColor(p.colorIndex));
+        // An enemy mine processed earlier in this same dense pool may have borrowed hotColorTmp
+        // for its telegraph colour, so restore the gun-heat target before every player instance.
+        hotColorTmp.setHex(pColors.hudDanger);
         // Default mode reaches a literal red; accessibility palettes reach their own semantic
         // danger colour, preserving the cue for players who cannot reliably distinguish red.
         colorTmp.lerp(hotColorTmp, this.playerHeatTint * 0.9);
