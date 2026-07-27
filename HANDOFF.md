@@ -1,185 +1,129 @@
 # Starfall Armada X — session handoff
 
-Paste the block below into a fresh thread. Everything above the line is context
-you need; everything below it is the actual instruction.
+## Current branch
 
----
+Work in progress is on `agent/heat-blink-feedback`, based on the latest `main` after the
+8-colour enemy-projectile palette fix was merged.
 
-## Kick-off prompt
-
-Continue the playtest-feedback work on **Starfall Armada X**
-(`/home/user/Starfall-Armada-X`, repo `Kiezling/Starfall-Armada-X`).
-
-**Branch state — read this before anything else.** PR #9 has already been
-**merged into `main`**, so every fix listed under "Done and pushed" below is on
-`main` now (merge commit `de96e1f`). A merged pull request is finished and cannot
-track new work: start follow-up work from the latest `main`, not by stacking onto
-the old merged history.
+Before continuing from another environment:
 
 ```bash
-git fetch origin main
-git checkout -B claude/<new-topic-branch> origin/main
+git fetch origin
+git checkout agent/heat-blink-feedback
+npm install
+npm run check
 ```
 
-If a session reports that this file "doesn't exist," it is on `main` without
-having fetched — this file was pushed after PR #9 merged, so it briefly lived
-only on the feature branch. `git fetch origin` fixes it. Do not conclude the
-prior session's work is missing on that basis; check `git log origin/main`
-first.
+The GitHub connector used for this pass could commit files but could not clone the repository,
+and this repository has no branch-triggered status checks. Therefore the current branch still
+needs the full local `npm run check` gate before merge.
 
-### Read this first — it saves a large amount of context
+## Read first
 
-**`CLAUDE.md` at the repo root is the map. Read it and nothing else to orient.**
-It was written last session specifically to fix the "this project starts with a
-huge context" problem. There was no `CLAUDE.md` before, so every session
-re-derived the project layout by reading `DESIGN.md` (27 KB), `CHECKLIST.md`
-(12 KB), `README.md` (9 KB) and sprawling through 23k lines of source before
-doing any work.
+`CLAUDE.md` is the project map. Do not read all of `DESIGN.md` or `CHECKLIST.md` unless the task
+specifically requires design/release context. The core invariants remain:
 
-**Do not read `DESIGN.md` or `CHECKLIST.md` unless the task is genuinely about
-design intent or release status.** They are reference documents, not context.
-`CLAUDE.md` already contains: the commands, a where-things-live table, the five
-invariants, the house comment style, and the parallel-work file-ownership rule.
-If you find yourself wanting the design docs, grep them for the specific section
-instead of reading them whole.
+- Fixed 60 Hz simulation; presentation is separate.
+- No DOM/render imports in simulation systems.
+- No allocation in hot update loops.
+- No `any`, external assets, or network requests.
+- Persisted data is validated and clamped.
 
-Same discipline applies to subagent prompts: tell each agent to read `CLAUDE.md`
-first and stay out of the big docs. That single instruction was worth a lot of
-budget last session.
+`src/game.ts`, `src/core/constants.ts`, and `src/ui/hud.ts` are the most contended files. Give each
+to only one parallel worker at a time.
 
-### How to run this — orchestrate, don't do it all inline
-
-The user explicitly wants delegation: *"every task needs to be delegated to the
-cheapest model that's capable (but don't forget the two strike rule)."* Sonnet
-subagents handled every workstream last session successfully. Use
-`Agent(subagent_type: "general-purpose", model: "sonnet", run_in_background: true)`.
-
-**The rule that made parallelism safe: strict file ownership.** Agents share one
-working tree, so two agents editing the same file lose each other's work. Give
-each agent an explicit list of files it may edit, name the files other agents own,
-and instruct it that any change needed outside its set goes in its final report as
-a precise copy-pasteable note rather than an edit. This worked cleanly across four
-concurrent agents. `src/game.ts`, `src/core/constants.ts`, and `src/ui/hud.ts` are
-the contended files — exactly one owner each at a time.
-
-Verify agents' claims rather than trusting them. Two of last session's most
-important findings were confirmed by independently checking the underlying
-contract (the pool's dense-prefix invariant, the boss/EnemyQuery gap) before
-committing.
-
-### Gate before every commit
+## Verification gate
 
 ```bash
-npm run typecheck    # must be clean
-npm run selftest     # 90/90 currently
-npm run verify       # 0 page errors, 0 EXTERNAL requests (the game ships assetless)
+npm run typecheck
+npm run selftest
+npm run verify
 ```
 
-Never commit red. Parallel agents mean the tree is often mid-write; poll until
-green rather than committing a broken build:
+Never merge a red tree.
 
-```bash
-for i in $(seq 1 90); do
-  if npx tsc --noEmit >/tmp/tc.log 2>&1 && npm run selftest >/tmp/st.log 2>&1; then
-    echo GREEN; exit 0; fi; sleep 10; done
-# Must be here: without it the loop falls through with the exit status of the
-# last `sleep` — i.e. 0 — so a gate that never went green reports success and
-# whatever is downstream happily commits a broken snapshot.
-echo "STILL RED after 15min"; grep -c '^\[FAIL\]' /tmp/st.log; exit 1
-```
+## Architecture facts that still matter
 
-A stop hook demands a clean tree each turn. Commit green snapshots of finished
-agents' files only, and label genuinely unfinished features "in progress" in the
-commit message.
+- `EnemyManager.getByIndex(i)` accepts a permanent pool-slot identity. Iteration over the dense
+  live prefix must use `getLiveByOrdinal(i)`.
+- Bosses live outside the pooled enemy manager. Anything needing all targetable hostiles must use
+  `CombinedEnemyQuery` / `game.ts`'s `targetQuery`.
+- Projectiles are pooled and rendered as two instanced meshes in `combat/projectiles.ts`.
+- Enemy projectile colour indexes correspond directly to `ENEMY_ORDER`. There are now eight enemy
+  archetypes and every palette has eight entries; preserve that one-to-one cardinality.
+- Only Wraith currently receives `altPrimary`; the other hulls still produce a no-op on swap.
+- Difficulty still scales only enemy damage, player hull, and enemy count.
 
-### Architecture facts already established — don't re-derive these
+## Completed and merged on main
 
-- **Two different index spaces on enemies.** `EnemyManager.getByIndex(i)` takes a
-  *permanent pool-slot identity* (what the spatial grid stores and returns).
-  `getLiveByOrdinal(i)` takes an ordinal in `[0, liveCount)` over the pool's dense
-  live prefix. Confusing them was the root cause of enemies vanishing from the
-  radar. Both are documented in `manager.ts`; read those comments before touching
-  any enemy iteration.
-- **Bosses are outside the pooled enemy system.** `BossEncounter` tests projectiles
-  itself and never registers in the pool or grid. `CombinedEnemyQuery`
-  (`enemies/bosses/index.ts`) adapts the live boss into the `EnemyQuery` shape;
-  `game.ts` builds it as `this.targetQuery` and passes it to all four targeting
-  entry points. Anything that needs "all hostiles including the boss" must use
-  `targetQuery`, not `this.enemies`.
-- **`Arena.isInEmpField(pos)` exists and nothing calls it.** The sector-2 Ion Storm
-  shield-disable mechanic is fully built and completely unwired. This is why the
-  effect reads as pointless glare.
-- **`Arena.damageAsteroid` / `queryAsteroidsNear` / `raycastAsteroids` exist**; only
-  `raycastAsteroids` is used, and only to block projectiles. Rocks are currently
-  indestructible and cannot be rammed.
-- **Only the Wraith hull has a second primary.** `swapWeapon` is wired correctly
-  end-to-end; on the other three hulls it is a legitimate no-op with zero feedback,
-  which is why it reads as broken.
-- **The difficulty table has only three knobs** (`enemyDamage`, `playerHull`,
-  `enemyCount`) in `core/constants.ts`. Nightmare is 1.6×/0.85×/1.45× vs Cadet's
-  0.7×/1.3×/0.85×. Enemies never get faster, tankier, smarter, or more aggressive.
+- Keyboard-first unrestricted flight, camera fixes, lock-on dwell/assist, boss targeting.
+- Real overheat/venting and tapped three-use blink movement.
+- Radar/enemy-index fixes, boss hitbox/gating fixes, EMP glare reduction.
+- Destructible/rammable Debris Belt asteroids and functional Ion Storm shield suppression.
+- Out-of-combat hull regeneration and HUD EMP status.
+- Mortar and Warden enemy archetypes.
+- Eight-entry accessible enemy-projectile palettes.
+- Single-file offline build and verification tooling.
 
-### Done and pushed (do not redo)
+## Completed on `agent/heat-blink-feedback`
 
-Items 1 (key rollover → cruise throttle; boost is now a tapped blink, both toggles
-removed at the user's request), 2 (EMP glare — five contributors, incl. no
-per-pixel distance fade and `reduceFlash` never gating it), 3/13/15 (the radar
-index bug), 4 (spread 0.012→0.052 rad on Pulse Repeater, per-weapon identity kept),
-5/6/19 (bosses lockable, bigger hitboxes with matched meshes, multi-plane fire,
-Hexard 88% resistance gate + segments given real HP — they previously had none and
-orbited outside the core hitbox), 7 (overheat now latches: 3.34 s to overheat,
-2.0 s recovery, `heatMax` 100→65), 9 (rock density 90→40 + collision API only),
-12/18/22/24 (answers), 14 (0.45 s lock dwell, `acquisitionProgress` exposed),
-16/21 (heading/pitch readout and horizon ladder removed), 20 (sector-clear card
-blocked the draft and was picking cards blindly underneath it).
+1. **Heat-visible player fire**
+   - `combat/projectiles.ts` computes current weapon heat once per simulation step.
+   - All visible player projectiles progressively blend toward the active palette's danger colour.
+   - Default mode therefore moves toward red; colourblind modes use their accessible semantic
+     danger colour rather than relying on red discrimination.
+   - The curve is intentionally weighted toward the final third of the heat range, preserving each
+     weapon's identity at low heat while making imminent overheat obvious near the target.
 
-### Remaining work, in priority order
+2. **Blink charge HUD**
+   - Added `ui/hud-feedback.css`, loaded from `main.ts`.
+   - The old continuous Boost percentage now reads visually as three discrete Blink charge slots.
+   - Partial recharge fills the next slot, while complete slots show how many activations are ready.
 
-1. **Batch B wiring — highest value, all built but inert.**
-   - Rocks: make them collidable and destructible. `arena.setImpactFX(this.impacts)`
-     after `ImpactFX` construction; `arena.setReduceFlash(next.reduceFlash)` in
-     `applySettings` (note: `applySettings` is not called at boot, so a persisted
-     `reduceFlash: true` never applies until the user reopens Settings — pre-existing
-     gap affecting hud/render too, worth fixing with one call after `loadSettings()`).
-     Change `blockedByTerrain` to return the hit index instead of a boolean and add a
-     `damageAsteroid` hook to `CombatContext` so weapon fire damages rocks. Add player
-     ram collision via `queryAsteroidsNear`, gated on `takeDamage` returning > 0 so the
-     0.6 s invuln window throttles it. Needs a new `PLAYER.collisionRadius` (~3.5).
-   - EMP: call `arena.isInEmpField(player.position)` in `simulate()` and gate/drain
-     shields in `player.ts`. This is what gives the effect a purpose.
-   - Mines (item 18): they are Mine Layer proximity mines. The palette aliasing bug is
-     fixed, but they still need an arming pulse in `combat/projectiles.ts` so they stop
-     reading as collectible pickups.
-   - `input.resetCruise()` on run start; add a cruise-throttle row to the Settings menu
-     (`ui/menus.ts`) — the option currently has no UI, so it is unreachable.
-2. **Item 10/17 — difficulty step change + regen.** Add scaling axes beyond the three
-   that exist: enemy health, speed, fire rate, AI aggression/reaction, elite frequency,
-   wave count. Nightmare should be genuinely brutal. Add difficulty-scaled health regen:
-   strong on Cadet, less on Pilot, minimal on Ace, none on Nightmare (vampiric augments
-   still work).
-3. **Item 8 — widen weapon swapping.** Give more hulls a second primary, or rethink the
-   mechanic, so "different styles of play for different enemies" actually lands. Also add
-   feedback when swap is a no-op.
-4. **Item 11 — flyable pickups.** Temporary augments ejected from kills that can fly out
-   of the arena, forcing a chase. Distinct from draft cards; short duration (30 s / wave).
-   Likely a new `progression/pickups.ts` plus `game.ts` wiring.
-5. **Item 23 — new enemy types.** `enemies/types.ts` + `ai.ts`. Note `ENEMY_ORDER` has 6
-   entries and the palette now has exactly 6 `enemyProjectile` colours — **adding a 7th
-   archetype requires extending every palette** or the modulo aliasing bug returns.
-6. **Item 5 follow-up (optional).** A HUD indicator for Hexard's gate:
-   `BossEncounter.coreResistant` and `.liveAddCount` are exposed and unused.
+3. **Mine arming telegraph**
+   - Enemy mines grow during their one-second arming window.
+   - Armed mines continue a strong size/colour pulse toward the palette's lethal telegraph colour,
+     preventing stationary hostile mines from resembling collectible pickups.
 
-### Known loose ends
+## Remaining work, in recommended order
 
-- `targeting.update()` runs before `enemies.update()` in `simulate()`, so targeting sees
-  a one-frame-stale grid. Negligible for most enemies, matters for fast movers. Fix is
-  reordering.
-- `game.ts` gives no feedback when `swapPrimary()` returns false.
+1. **Run and repair the verification gate for this branch.**
+   - Pay particular attention to TypeScript, WebGL instance colour updates, CSS import order, and
+     the offline/single-file build.
 
-### Working agreement with the user
+2. **Difficulty step change + difficulty-scaled hull regeneration.**
+   - Add enemy health, speed, fire-rate/aggression, elite-frequency, and wave-pressure axes.
+   - Target hull-regeneration multipliers: Cadet strong, Pilot baseline, Ace minimal, Nightmare 0.
+   - Suggested starting points are 1.6 / 1.0 / 0.4 / 0.0, followed by playtest tuning.
 
-They play-test between sessions, so **land work in a playable state and push before the
-session ends**. Do not open a pull request unless they ask — they asked what the "create
-PR" button does and were told it is theirs to click; they have mentioned wanting a merge
-to `main` eventually, so offer it near the end rather than assuming. Keep an eye on
-budget and wrap up with a handoff before hitting a limit.
+3. **Weapon swapping breadth and feedback.**
+   - Give additional hulls purposeful alternate primaries or redesign swapping as a loadout-wide
+     mechanic.
+   - Always provide feedback when a swap cannot occur; never silently consume the keypress.
+
+4. **Temporary flyable pickups.**
+   - Short-duration combat modifiers ejected from kills, distinct from draft cards.
+   - They should retain momentum and be able to leave the arena, creating a chase decision.
+   - Likely ownership: new `progression/pickups.ts`, rendering/collection wiring in `game.ts`.
+
+5. **Difficulty and roster playtest pass.**
+   - Confirm Mortar/Warden threat budgets, palette mappings, mine readability, asteroid attrition,
+     EMP shield drain, hull regen, and Nightmare lethality together rather than in isolation.
+
+6. **Optional HUD polish.**
+   - Expose Hexard's core-resistance gate using `BossEncounter.coreResistant` and `.liveAddCount`.
+
+## Known loose ends
+
+- `targeting.update()` runs before `enemies.update()`, so targeting sees a one-frame-stale grid.
+- The asteroid terrain callback currently applies flat rock damage to both player and enemy shots
+  because `blockedByTerrain` receives neither projectile team nor actual shot damage. A cleaner
+  contract would return the asteroid index and separately pass team/damage.
+- The blink HUD override changes visible text with CSS; when `hud.ts` is next edited, make the DOM
+  label itself `Blink charges` so assistive technology receives the same wording.
+
+## Working agreement
+
+The user play-tests between sessions. Push playable snapshots before ending. Do not open a pull
+request unless requested; the user normally creates and merges it. Keep this handoff current before
+session limits become a risk.
