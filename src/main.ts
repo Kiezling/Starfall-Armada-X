@@ -6,6 +6,7 @@
  */
 
 import { Game } from './game';
+import './ui/hud-feedback.css';
 
 const container = document.getElementById('app');
 

@@ -1,0 +1,80 @@
+/*
+ * Focused HUD overrides for mechanics whose presentation changed after the original HUD was
+ * built. Boost is now a three-use blink, so a continuous fuel bar is the wrong visual contract:
+ * the player needs to know how many complete activations are ready, with partial recharge shown
+ * only inside the next slot.
+ */
+
+.hud-bar--boost .hud-stat-name {
+  font-size: 0;
+}
+
+.hud-bar--boost .hud-stat-name::before {
+  content: 'Blink charges';
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+/* The percentage was useful for held boost but competes with the new countable-slot reading. */
+.hud-bar--boost .hud-stat-value {
+  visibility: hidden;
+}
+
+.hud-bar--boost .hud-bar-track {
+  height: 10px;
+  border: 0;
+  overflow: hidden;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.08) 0 30%,
+    transparent 30% 32%,
+    rgba(255, 255, 255, 0.08) 32% 62%,
+    transparent 62% 64%,
+    rgba(255, 255, 255, 0.08) 64% 94%,
+    transparent 94% 100%
+  );
+}
+
+.hud-bar--boost .hud-bar-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    var(--border-strong) 0 1px,
+    transparent 1px calc(30% - 1px),
+    var(--border-strong) calc(30% - 1px) 30%,
+    transparent 30% 32%,
+    var(--border-strong) 32% calc(32% + 1px),
+    transparent calc(32% + 1px) calc(62% - 1px),
+    var(--border-strong) calc(62% - 1px) 62%,
+    transparent 62% 64%,
+    var(--border-strong) 64% calc(64% + 1px),
+    transparent calc(64% + 1px) calc(94% - 1px),
+    var(--border-strong) calc(94% - 1px) 94%,
+    transparent 94% 100%
+  );
+}
+
+.hud-bar--boost .hud-bar-fill {
+  background: var(--player-accent);
+  -webkit-mask: linear-gradient(
+    to right,
+    #000 0 30%,
+    transparent 30% 32%,
+    #000 32% 62%,
+    transparent 62% 64%,
+    #000 64% 94%,
+    transparent 94% 100%
+  );
+  mask: linear-gradient(
+    to right,
+    #000 0 30%,
+    transparent 30% 32%,
+    #000 32% 62%,
+    transparent 62% 64%,
+    #000 64% 94%,
+    transparent 94% 100%
+  );
+}
