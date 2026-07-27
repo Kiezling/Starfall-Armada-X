@@ -5,3 +5,6 @@ dist/
 .vite/
 .verify/
 .selftest/
+
+dist-single/
+.single-tmp/
