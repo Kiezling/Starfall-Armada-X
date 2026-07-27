@@ -9,6 +9,16 @@
  * Sector dressing (Debris Belt asteroids, Ion Storm EMP fronts, The Maw's gravity well) is
  * additive on top of the boundary: only the active sector's dressing is ever in the scene,
  * so idle sectors cost nothing.
+ *
+ * The Debris Belt asteroid field is collidable/destructible data, not just decoration: each
+ * rock carries a position, radius, and hit points, and this class exposes the query/damage API
+ * (raycastAsteroids, queryAsteroidsNear, damageAsteroid) that a collision system elsewhere wires
+ * up against the player and against weapon fire. See those methods' doc comments for the exact
+ * contract.
+ *
+ * The Ion Storm EMP shockwave is presently sight-only: Arena implements the "disabling shields
+ * inside them" query DESIGN.md promises (isInEmpField) but nothing currently calls it — see that
+ * method's doc comment.
  */
 
 import * as THREE from 'three';
@@ -16,7 +26,9 @@ import { ARENA } from '../core/constants';
 import { Rng } from '../core/rng';
 import { palette, color, depthFogColor, DEPTH_FOG_DENSITY } from './palette';
 import { SUN_COLOR, SUN_DIRECTION } from './starfield';
+import type { ImpactFX } from './fx/impacts';
 import {
+  clamp,
   clamp01,
   easeInOutCubic,
   randomOnSphere,
@@ -28,7 +40,15 @@ import {
 
 /* Tunables local to arena dressing — not gameplay-critical enough to belong in constants.ts. */
 
-const ASTEROID_COUNT = 90;
+// Was 90. Playtesting called the field "too dense... I want to fly, not thread a needle" — at
+// 90 rocks of radius 9-24 spread across the 0.3-0.82 shell fraction of a 520-unit arena, the
+// average gap between neighbours was well within a single turn radius, so open-throttle flight
+// meant constant weaving rather than occasional cover-seeking. Cutting to 40 (~55% fewer) keeps
+// the Debris Belt's identity — a field you can duck behind, not empty space — while opening up
+// real flying lanes between clusters. Paired with making the rocks destructible (see
+// damageAsteroid/queryAsteroidsNear below), a dense-feeling early field also thins out over the
+// course of a fight instead of staying a static maze all sector long.
+const ASTEROID_COUNT = 40;
 /** Debris shell keeps clear of the centre so the player always has open space to fight in. */
 const ASTEROID_SHELL_MIN = 0.3;
 const ASTEROID_SHELL_MAX = 0.82;
@@ -36,6 +56,13 @@ const ASTEROID_RADIUS_MIN = 9;
 const ASTEROID_RADIUS_MAX = 24;
 const ASTEROID_HP_MIN = 40;
 const ASTEROID_HP_MAX = 95;
+/** Ramming/shooting a rock apart uses a dusty stone tint rather than a palette colour: unlike
+ * weapon fire or telegraphs, rock debris is not something the player needs to colour-discriminate
+ * or dodge, so it deliberately sits outside the palette system (DESIGN's colourblind contract
+ * only governs things you must tell apart to survive). Distinct from both the fiery ship-kill
+ * palette (explosionMid/explosionCore) and the grey the asteroid shader itself renders in, so a
+ * rock breaking apart still reads as its own event. */
+const ROCK_DEBRIS_COLOR = 0xb0a08a;
 
 const EMP_FRONT_COUNT = 3;
 const EMP_THICKNESS = 26;
@@ -286,10 +313,20 @@ const ASTEROID_FRAGMENT = /* glsl */ `
 const EMP_VERTEX = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vViewDir;
+  varying float vViewDist;
   void main() {
     vNormal = normalize(normalMatrix * normal);
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vViewDir = normalize(-mv.xyz);
+    // Distance from the camera to this patch of the shell (same trick as the boundary shader's
+    // vViewDist). The EMP sphere is drawn at up to arena-radius scale, so when the camera sits
+    // inside it — which is most of the sweep, not just the crossing instant — huge swaths of
+    // the *far* side of the shell are still in the view frustum, all reading at similar
+    // brightness with no depth cue. That far geometry is what turned this into a dome that
+    // wraps and washes the whole screen instead of a local pulse. Fading it out with distance
+    // confines the glow to the patch of shell actually near the camera, which is the only part
+    // that should read as "the wave is passing through you right now."
+    vViewDist = length(mv.xyz);
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -297,16 +334,35 @@ const EMP_VERTEX = /* glsl */ `
 const EMP_FRAGMENT = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vViewDir;
+  varying float vViewDist;
   uniform vec3 uColor;
   uniform float uTime;
   uniform float uAlpha;
   void main() {
     // Rim-lit shockwave: brightest edge-on, which is exactly where a moving spherical
-    // wavefront reads best against the arena, and needs no distance math in the shader.
-    float fres = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0), 2.4);
-    float shimmer = 0.85 + 0.15 * sin(uTime * 6.0);
-    vec3 col = uColor * fres * shimmer * 2.0;
-    gl_FragColor = vec4(col, fres * uAlpha);
+    // wavefront reads best against the arena. The exponent is deliberately steep (was 2.4,
+    // which lit a wide angular band — anywhere within ~50 degrees of edge-on — across a huge
+    // fraction of the screen once the camera sat inside the shell). A steep falloff keeps the
+    // bright core to a narrow grazing band, so the effect reads as a thin luminous ring
+    // sweeping past rather than a wall of light filling the view.
+    float fres = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0), 6.0);
+
+    // Local-only: only shell surface within a couple hundred units of the camera contributes.
+    // Combined with the vertex shader's vViewDist, this is what actually stops the far side of
+    // an arena-spanning sphere from lighting up the whole dome — the CPU-side "enclosure" fade
+    // in update() only ever accounted for the wavefront's *radius* relative to the player, never
+    // for how much of the currently-visible sphere surface was nearby versus hundreds of units
+    // away, which is the same geometry either way regardless of enclosure state.
+    float depthFade = 1.0 - smoothstep(60.0, 220.0, vViewDist);
+
+    float shimmer = 0.9 + 0.1 * sin(uTime * 6.0);
+    // Peak emissive was uColor * 2.0 here, which — additively blended, at up to 0.9 alpha, into
+    // a threshold-0.38 bloom pass — is most of why this "glare" rather than "glows": it was
+    // handing the bloom pass a screen-filling patch of over-threshold pixels. Dropping the
+    // multiplier below 1 keeps the shockwave visible as a colour/shape cue without itself being
+    // a bloom source; the ring should be legible, not a light emitter.
+    vec3 col = uColor * fres * shimmer * 0.85;
+    gl_FragColor = vec4(col, fres * depthFade * uAlpha);
   }
 `;
 
@@ -357,6 +413,21 @@ export class Arena {
   private shrinkActive = false;
 
   private currentSector = 0;
+
+  /** DESIGN §15's flash/bloom reduction toggle. Off by default, matching Settings' own default
+   * (see core/settings.ts). See setReduceFlash for why this needs to be a hard gate rather than
+   * a dimming. */
+  private reduceFlash = false;
+
+  /**
+   * Shared explosion/spark system, late-bound via setImpactFX. Arena is constructed before
+   * ImpactFX/ParticleSystem in game.ts's boot order (rendering scaffolding goes in before the
+   * effects layer), so it cannot be a constructor parameter without reordering that boot
+   * sequence — a setter avoids touching code outside this file. Nullable so Arena stays usable
+   * on its own (e.g. in isolation/tests) without an effects system wired up: asteroid
+   * destruction just silently skips its VFX rather than throwing.
+   */
+  private impactFX: ImpactFX | null = null;
 
   /* Boundary shell — always in the scene. */
   private readonly boundaryMesh: THREE.Mesh;
@@ -507,6 +578,24 @@ export class Arena {
     this.shrinkActive = true;
   }
 
+  /**
+   * Wires in the accessibility "flash/bloom reduction" toggle (DESIGN §15). Currently the only
+   * consumer inside Arena is the Ion Storm EMP shockwave, which this fully zeroes out under the
+   * toggle rather than merely dimming it — a partial reduction is exactly what playtesters
+   * already reported as insufficient once (commit 5e00c2c dimmed it and it was still reported
+   * blinding), so "reduceFlash on" needs to mean *gone*, not *fainter*.
+   */
+  setReduceFlash(on: boolean): void {
+    this.reduceFlash = on;
+  }
+
+  /** Late-bound reference to the shared explosion/spark system — see the impactFX field comment
+   * for why this can't be a constructor parameter. Call once, after both Arena and ImpactFX
+   * exist. */
+  setImpactFX(fx: ImpactFX): void {
+    this.impactFX = fx;
+  }
+
   update(playerPos: THREE.Vector3, elapsed: number, dt: number): void {
     if (this.shrinkActive) {
       this.shrinkTimer += dt;
@@ -532,24 +621,43 @@ export class Arena {
       this.asteroidMaterial.uniforms.uTime.value = elapsed;
       (this.asteroidMaterial.uniforms.uFogColor.value as THREE.Color).copy(depthFogColor());
     } else if (this.currentSector === 1) {
-      for (const front of this.empFronts) {
-        front.radius += EMP_SPEED * dt;
-        if (front.radius > front.maxRadius + EMP_THICKNESS) {
-          front.radius = -EMP_THICKNESS;
+      // reduceFlash (DESIGN §15's "flash/bloom reduction toggle... removes strobing") gets a
+      // hard kill here, not a dimming: the earlier fix (commit 5e00c2c) only chased the
+      // enclosure math and never touched this at all, so players with the toggle on were still
+      // getting the full sweep. Zeroing uAlpha every frame is simplest and cannot drift out of
+      // sync with a partially-applied fade elsewhere.
+      if (this.reduceFlash) {
+        for (const front of this.empFronts) {
+          front.radius += EMP_SPEED * dt;
+          if (front.radius > front.maxRadius + EMP_THICKNESS) front.radius = -EMP_THICKNESS;
+          front.mesh.scale.setScalar(Math.max(front.radius, 0.001));
+          front.material.uniforms.uAlpha.value = 0;
         }
-        front.mesh.scale.setScalar(Math.max(front.radius, 0.001));
-        // Fade in from the centre and fade out as the wave washes past the boundary.
-        const growIn = clamp01(front.radius / (EMP_THICKNESS * 2));
-        const shrinkOut = clamp01((front.maxRadius + EMP_THICKNESS - front.radius) / (EMP_THICKNESS * 2));
-        // Once the wavefront's radius passes the player, the shell fully encloses the camera:
-        // every visible point reads edge-on, and the rim-lit shader washes the whole screen
-        // additively instead of reading as a wave. Fading it out as the enclosure deepens keeps
-        // the sweep readable (brightest right as it crosses you) instead of blinding — worst
-        // near the arena centre, where the shell stays wrapped around the player for most of
-        // its sweep rather than passing through quickly.
-        const enclosure = clamp01((front.radius - playerDist) / EMP_THICKNESS);
-        front.material.uniforms.uAlpha.value = Math.min(growIn, shrinkOut) * (1 - enclosure) * 0.9;
-        front.material.uniforms.uTime.value = elapsed;
+      } else {
+        for (const front of this.empFronts) {
+          front.radius += EMP_SPEED * dt;
+          if (front.radius > front.maxRadius + EMP_THICKNESS) {
+            front.radius = -EMP_THICKNESS;
+          }
+          front.mesh.scale.setScalar(Math.max(front.radius, 0.001));
+          // Fade in from the centre and fade out as the wave washes past the boundary.
+          const growIn = clamp01(front.radius / (EMP_THICKNESS * 2));
+          const shrinkOut = clamp01((front.maxRadius + EMP_THICKNESS - front.radius) / (EMP_THICKNESS * 2));
+          // Once the wavefront's radius passes the player, the shell fully encloses the camera:
+          // every visible point reads edge-on, and the rim-lit shader washes the whole screen
+          // additively instead of reading as a wave. Fading it out as the enclosure deepens keeps
+          // the sweep readable (brightest right as it crosses you) instead of blinding — worst
+          // near the arena centre, where the shell stays wrapped around the player for most of
+          // its sweep rather than passing through quickly.
+          const enclosure = clamp01((front.radius - playerDist) / EMP_THICKNESS);
+          // Ceiling dropped from 0.9 (near-opaque) to 0.35. Between this and the fragment
+          // shader's own multiplier/exponent/depth-fade cuts above, the wave is now sized to sit
+          // well under the bloom pass's 0.38 threshold (RENDER.bloomThreshold) at typical
+          // viewing distance instead of blowing through it — "peripheral atmosphere," per the
+          // brief, rather than a screen flash.
+          front.material.uniforms.uAlpha.value = Math.min(growIn, shrinkOut) * (1 - enclosure) * 0.35;
+          front.material.uniforms.uTime.value = elapsed;
+        }
       }
     } else if (this.currentSector === 2) {
       this.mawMesh.rotation.z += dt * 0.25;
@@ -564,6 +672,20 @@ export class Arena {
     this.applySectorVisibility();
   }
 
+  /* Asteroid collision/destruction API -----------------------------------------------------
+   *
+   * This is the whole data model a collision/damage system outside this file needs, and
+   * nothing more: position + radius + hit points per rock, a swept-segment query for
+   * fast-moving colliders (shots, the player at speed), a near-point query for anything that
+   * wants to test overlap against a single point (a slower/instantaneous player check, spawn
+   * placement, radar), and one method to apply damage and, on death, hide the instance and
+   * play its destruction VFX. Nothing here allocates: the swept and near-point queries are
+   * plain loops over the existing typed arrays (ASTEROID_COUNT is 40 — cheap enough not to need
+   * the spatial grid the enemy/projectile systems use for their much larger populations), and
+   * damageAsteroid's death path reuses the same scratch matrix buildAsteroidField already used
+   * to seed the instance buffer.
+   */
+
   get asteroidCount(): number {
     return ASTEROID_COUNT;
   }
@@ -574,6 +696,14 @@ export class Arena {
     return this.asteroidAlive[i] ? this.asteroidRadius[i]! : 0;
   }
 
+  /**
+   * Swept-sphere query: does a collider of the given `radius` moving from `from` to `to` this
+   * step pass through any live rock? Returns the hit rock's index, or -1. This already gates
+   * enemy-fire terrain blocking (see game.ts's `blockedByTerrain`, wired to ProjectileSystem);
+   * the same call, with the player's previous/current position and its collision radius,
+   * doubles as the "ramming" half of task 9 — see this file's header/the report for the exact
+   * game.ts wiring, since applying damage from a hit lives outside this file.
+   */
   raycastAsteroids(from: THREE.Vector3, to: THREE.Vector3, radius: number): number {
     for (let i = 0; i < ASTEROID_COUNT; i++) {
       if (!this.asteroidAlive[i]) continue;
@@ -582,18 +712,78 @@ export class Arena {
     return -1;
   }
 
+  /**
+   * Fills `out` with the indices of every live rock whose surface is within `radius` of
+   * (x, y, z) — i.e. a sphere-sphere overlap test against a point, as opposed to
+   * raycastAsteroids' swept segment. Useful anywhere a single instant's overlap matters more
+   * than a frame-to-frame sweep: a per-frame "is the player currently touching a rock" check
+   * that doesn't need to track a previous-position snapshot, spawn-point validation (don't drop
+   * an enemy or the player inside a boulder), or a HUD/radar proximity read. Returns the number
+   * of hits written, capped at `out.length`; callers own `out` (mirrors EnemyQuery.queryNear's
+   * convention in combat/projectiles.ts) so nothing here allocates.
+   */
+  queryAsteroidsNear(x: number, y: number, z: number, radius: number, out: Int32Array): number {
+    let count = 0;
+    for (let i = 0; i < ASTEROID_COUNT && count < out.length; i++) {
+      if (!this.asteroidAlive[i]) continue;
+      const p = this.asteroidPos[i]!;
+      const rr = radius + this.asteroidRadius[i]!;
+      const dx = p.x - x;
+      const dy = p.y - y;
+      const dz = p.z - z;
+      if (dx * dx + dy * dy + dz * dz <= rr * rr) out[count++] = i;
+    }
+    return count;
+  }
+
+  /**
+   * Applies `amount` damage to rock `index`. Returns true iff this hit destroyed it. A rock
+   * that survives gets a small spark burst so ramming/shooting one gives immediate feedback
+   * (mirrors ImpactFX.hit, used everywhere else in the game for "you connected"); one that
+   * dies gets hidden (scaled to zero — InstancedMesh has no per-instance visibility flag, so a
+   * zero-scale matrix is how the rest of this class already removes an instance without
+   * touching the shared geometry/instance count) and a debris burst scaled to its own radius,
+   * so a boulder breaking apart reads as bigger news than a pebble doing the same.
+   *
+   * `impactFX` is optional (see the field comment) — with no ImpactFX wired in, damage and
+   * destruction still happen, just silently.
+   */
   damageAsteroid(index: number, amount: number): boolean {
     if (index < 0 || index >= ASTEROID_COUNT || !this.asteroidAlive[index]) return false;
     this.asteroidHp[index]! -= amount;
-    if (this.asteroidHp[index]! > 0) return false;
+    const pos = this.asteroidPos[index]!;
+
+    if (this.asteroidHp[index]! > 0) {
+      this.impactFX?.hit(pos.x, pos.y, pos.z, 0, 1, 0, amount, ROCK_DEBRIS_COLOR);
+      return false;
+    }
 
     this.asteroidAlive[index] = 0;
     scratchMat4A.makeScale(0, 0, 0);
     this.asteroidMesh.setMatrixAt(index, scratchMat4A);
     this.asteroidMesh.instanceMatrix.needsUpdate = true;
+
+    // ImpactFX.explosion's `scale` is calibrated against ship sizes elsewhere (1 for a normal
+    // enemy kill, up to 3 for the final boss — see game.ts), not asteroid radii, so this maps
+    // the rock's own radius (9-24) into that same rough range rather than passing it through
+    // directly, which would either be nearly invisible for a small rock or wildly oversized for
+    // a big one.
+    const scale = clamp(this.asteroidRadius[index]! / 12, 0.75, 2.2);
+    this.impactFX?.explosion(pos.x, pos.y, pos.z, scale, ROCK_DEBRIS_COLOR);
     return true;
   }
 
+  /**
+   * True while `pos` sits inside the ~26-unit-thick band of an active EMP wavefront. This is
+   * the hook DESIGN.md §4 describes ("Ion Storm — periodic EMP fronts sweep the arena,
+   * disabling shields inside them") and it has been fully implemented since this class existed
+   * — but as of this pass, nothing outside Arena calls it. game.ts never queries it, and
+   * PlayerSystem (src/ship/player.ts) has no notion of an EMP field in its shield-regen logic.
+   * The visual sweep has been playing every Ion Storm run with zero gameplay behind it. See
+   * this file's accompanying report for the one-line wiring that would give it a mechanic to
+   * telegraph (gate PlayerSystem.updateShield's regen — and ideally active shield drain — on
+   * this being true, sourced from game.ts's per-frame update).
+   */
   isInEmpField(pos: THREE.Vector3): boolean {
     if (this.currentSector !== 1) return false;
     for (const front of this.empFronts) {
