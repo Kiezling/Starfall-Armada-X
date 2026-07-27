@@ -61,10 +61,31 @@ export const PLAYER = {
   maxBankAngle: 0.75,
 
   boostMultiplier: 1.85,
-  boostDrain: 34,
   boostRegen: 18,
   boostMax: 100,
-  /** Boost must reach this much before it can be re-engaged after emptying. */
+
+  /*
+   * Boost is a *blink*: tapped, not held.
+   *
+   * It used to be a held drain, which made it the fourth key a player had to keep down while
+   * already holding throttle, strafe and fire — and on a keyboard with limited N-key rollover
+   * that is exactly the press that gets dropped. Tapping also reads better against what boost
+   * is actually for: a committed repositioning burst to break a lock or close a gap, rather
+   * than a speed slider held down whenever the meter allows.
+   */
+
+  /** Charge spent per blink. At boostMax 100 that is three blinks from a full meter. */
+  blinkCost: 32,
+  /**
+   * Seconds of `boostMultiplier` speed a blink grants. At 1.85x on a 115-unit base speed this
+   * covers roughly 96 units of travel — far enough to cross out of a dogfight's knife range in
+   * one press, short enough that it cannot be chained into permanent flight.
+   */
+  blinkDuration: 0.45,
+  /**
+   * Charge must reach this before another blink can start, so a nearly-empty meter cannot be
+   * feathered into a stutter of useless micro-blinks. Equal to `blinkCost` plus a small margin.
+   */
   boostRearmThreshold: 20,
 
   driftDuration: 1.5,

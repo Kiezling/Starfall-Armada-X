@@ -432,9 +432,25 @@ class ScriptedInput implements InputState {
     return this.held.has(action);
   }
 
-  wasPressed(): boolean {
-    return false;
+  /**
+   * Just-pressed edges, cleared by `endStep` exactly as InputManager clears its own. Without
+   * this the harness reported `false` for every edge, so anything driven by a tap rather than a
+   * hold — the blink, most obviously — could never fire in a test and would look green purely
+   * because it was never exercised.
+   */
+  press(action: InputAction): void {
+    this.pressed.add(action);
   }
+
+  endStep(): void {
+    this.pressed.clear();
+  }
+
+  wasPressed(action: InputAction): boolean {
+    return this.pressed.has(action);
+  }
+
+  private readonly pressed = new Set<InputAction>();
 }
 
 const STEP = 1 / 120;
@@ -537,6 +553,70 @@ function testFlightLoopsWithoutInverting(): void {
  * at exactly zero, so any residual turn would be the model's own doing — and a nose that
  * wanders on its own is unusable for aiming.
  */
+/**
+ * Boost is a blink now: a tap buys a fixed burst, and holding the key does nothing extra.
+ *
+ * That last half is the part worth guarding. The whole reason for the change is that a held
+ * boost was the fourth key competing for a limited-rollover keyboard's attention, so if holding
+ * the key silently kept re-triggering — or extended the burst — the change would have bought
+ * nothing while looking like it worked. The test therefore checks all three properties: one tap
+ * spends exactly one charge, the burst ends on its own timer while the key is still down, and a
+ * meter below the rearm threshold refuses to start a blink at all.
+ */
+function testBoostBlinksOnTapNotHold(): void {
+  const player = createPlayerState({
+    hullId: 'starfall',
+    primary: 'pulseRepeater',
+    secondary: 'swarmMissiles',
+    difficulty: Difficulty.Pilot,
+  });
+  const flight = new FlightModel();
+  const input = new ScriptedInput();
+
+  // One tap, then keep the key held for well past the blink's duration.
+  const startCharge = player.boost;
+  input.hold('boost', true);
+  input.press('boost');
+  flight.update(player, input, STEP, 520, 1, null, 0);
+  input.endStep();
+
+  const spent = startCharge - player.boost;
+  check(
+    'a single boost tap spends exactly one blink charge',
+    Math.abs(spent - PLAYER.blinkCost) < 1e-3 && player.boosting,
+    `spent ${spent.toFixed(2)} (blinkCost=${PLAYER.blinkCost}), boosting=${player.boosting}`,
+  );
+
+  // Hold the key down across the whole burst and beyond. The edge never repeats, so charge must
+  // only ever climb back from here.
+  let lowest = player.boost;
+  let stillBoostingAtEnd = false;
+  for (let i = 0; i < 120; i++) {
+    flight.update(player, input, STEP, 520, 1, null, 0);
+    input.endStep();
+    lowest = Math.min(lowest, player.boost);
+    if (i === 60) stillBoostingAtEnd = player.boosting;
+  }
+
+  check(
+    'holding boost neither extends the blink nor re-triggers it',
+    !stillBoostingAtEnd && !player.boosting && lowest >= startCharge - PLAYER.blinkCost - 1e-3,
+    `boosting after 0.5s=${stillBoostingAtEnd}, at 1s=${player.boosting}, lowest charge=${lowest.toFixed(2)}`,
+  );
+
+  // Drain below the rearm threshold and confirm a tap is refused rather than feathered.
+  player.boost = PLAYER.boostRearmThreshold - 1;
+  const beforeRefused = player.boost;
+  input.press('boost');
+  flight.update(player, input, STEP, 520, 1, null, 0);
+  input.endStep();
+  check(
+    'a blink below the rearm threshold is refused, not feathered',
+    !player.boosting && player.boost >= beforeRefused,
+    `boosting=${player.boosting}, charge ${beforeRefused.toFixed(2)} -> ${player.boost.toFixed(2)}`,
+  );
+}
+
 function testFlightHoldsHeadingWhenReleased(): void {
   const player = createPlayerState({
     hullId: 'starfall',
@@ -1014,6 +1094,7 @@ export function runSelfTest(): TestResult[] {
   testRngDeterminism();
   testFlightLoopsWithoutInverting();
   testFlightHoldsHeadingWhenReleased();
+  testBoostBlinksOnTapNotHold();
   testLookRotationIsARotation();
   testLockAssistConvergesAndYields();
   testLeadTargetPrediction();

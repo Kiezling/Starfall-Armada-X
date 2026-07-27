@@ -76,7 +76,7 @@ export const ALT_KEYBINDS: Partial<Record<InputAction, string>> = {
  * Bumped whenever a *control-scheme* default changes in a way that must reach players who
  * already have a saved settings blob. Cosmetic or audio defaults do not need a bump.
  * 2 — pitch inverted by default (Up = nose down) alongside the removal of the pitch limit.
- * 3 — rollover-relief toggles added (toggleFire / toggleBoost / cruiseThrottle).
+ * 3 — cruise throttle added; boost became a tapped blink rather than a held drain.
  */
 const SETTINGS_SCHEMA = 3;
 
@@ -107,12 +107,9 @@ export function createDefaultSettings(): Settings {
     invertY: true,
     mouseSensitivity: 1,
 
-    // All three rollover-relief options default off: they each change how the ship *feels* to
-    // fly, and a player whose keyboard has full rollover should not silently get a different
-    // control model than the one the flight tuning was built against. Settings → Controls
-    // groups them together so a player who is losing keypresses can find them immediately.
-    toggleFire: false,
-    toggleBoost: false,
+    // Defaults off: it changes how the ship feels to fly, and a player whose keyboard has full
+    // rollover should not silently get a different control model than the one the flight tuning
+    // was built against.
     cruiseThrottle: false,
 
     keybinds: { ...DEFAULT_KEYBINDS },
@@ -203,8 +200,6 @@ export function loadSettings(): Settings {
     // Rollover relief is a deliberate accessibility choice about the player's hardware, not a
     // tuning default, so it survives a schema bump rather than being reset with the rest of the
     // control scheme.
-    toggleFire: readBool(rec.toggleFire, defaults.toggleFire),
-    toggleBoost: readBool(rec.toggleBoost, defaults.toggleBoost),
     cruiseThrottle: readBool(rec.cruiseThrottle, defaults.cruiseThrottle),
 
     keybinds: sanitizeKeybinds(rec.keybinds),

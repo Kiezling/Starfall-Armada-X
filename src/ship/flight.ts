@@ -104,20 +104,35 @@ export class FlightModel {
     const stats = player.stats;
     const def = player.def;
 
-    // --- Boost --------------------------------------------------------------------------------
-    // Boost is gated on a rearm threshold so an empty meter cannot be feathered for a permanent
-    // speed bonus; the player has to let it recover meaningfully first.
-    const wantsBoost = input.isDown('boost');
-    if (wantsBoost && player.boost > 0 && (player.boosting || player.boost > PLAYER.boostRearmThreshold)) {
-      player.boosting = true;
-      player.boost = Math.max(0, player.boost - PLAYER.boostDrain * dt);
-      if (player.boost <= 0) player.boosting = false;
-    } else {
-      player.boosting = false;
-      player.boost = Math.min(
-        PLAYER.boostMax,
-        player.boost + PLAYER.boostRegen * stats.boostMult * dt,
-      );
+    // --- Blink --------------------------------------------------------------------------------
+    // Boost is a tap, not a hold: one press spends `blinkCost` and buys a fixed `blinkDuration`
+    // of boosted speed that runs to completion on its own. Holding the key does nothing extra,
+    // which is the point — it frees the key that a limited-rollover keyboard was dropping, and
+    // it makes boost a committed repositioning burst rather than a speed slider.
+    //
+    // The press edge is read with `wasPressed`, so this must run on the fixed-timestep path:
+    // `endStep` clears the edge once per simulation step, and a blink triggered from the render
+    // cadence would fire several times off a single tap.
+    if (player.blinkTimer > 0) {
+      player.blinkTimer -= dt;
+      if (player.blinkTimer <= 0) {
+        player.blinkTimer = 0;
+        player.boosting = false;
+      }
+    }
+
+    // Charge regenerates whenever a blink is not actively running, including across the tap
+    // itself — the cost is deducted up front, so there is no window where a blink both drains
+    // and refills.
+    if (player.blinkTimer <= 0) {
+      player.boost = Math.min(PLAYER.boostMax, player.boost + PLAYER.boostRegen * stats.boostMult * dt);
+      // The rearm threshold stops a nearly-empty meter being feathered into a stutter of
+      // micro-blinks; it has to clear the cost outright, not merely be non-zero.
+      if (input.wasPressed('boost') && player.boost >= PLAYER.boostRearmThreshold) {
+        player.boost = Math.max(0, player.boost - PLAYER.blinkCost);
+        player.blinkTimer = PLAYER.blinkDuration;
+        player.boosting = true;
+      }
     }
 
     // --- Drift ---------------------------------------------------------------------------------

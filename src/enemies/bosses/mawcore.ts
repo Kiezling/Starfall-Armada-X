@@ -234,8 +234,21 @@ export class MawCore extends Boss {
     ctx.playerVel.addScaledVector(pull, strength * falloff * dt);
   }
 
+  /**
+   * Alternates between the historical flat ring and a tilted one every emission — the ring's
+   * job here is suppression pressure while the player solves the lit-plate puzzle, not itself a
+   * mechanic to teach, so unlike Hexard's phase-gated tilt this one is safe to vary from the
+   * start (playtester feedback #6: "only shoots along one plane").
+   */
   fireTurretRing(ctx: BossContext, damage: number): void {
-    patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle);
+    this.ringTiltFlip = !this.ringTiltFlip;
+    if (this.ringTiltFlip) {
+      const tilt = 0.5; // ~27 deg off vertical — enough to force a vertical dodge, still clearly a ring
+      RING_AXIS.set(Math.sin(this.ringAngle) * tilt, 1, Math.cos(this.ringAngle) * tilt).normalize();
+      patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle, Infinity, 0, RING_AXIS);
+    } else {
+      patternRing(ctx, this.position, 26, 48, damage, phaseColor(this.phase), this.ringAngle);
+    }
   }
 
   fireShell(ctx: BossContext, damage: number): void {

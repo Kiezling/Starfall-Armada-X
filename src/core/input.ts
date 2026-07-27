@@ -142,23 +142,8 @@ export class InputManager implements InputState {
   private mouseLeftDown = false;
   private mouseRightDown = false;
 
-  /*
-   * Rollover-relief latches. These are pure input-layer state: `isDown` reports the latch in
-   * place of the raw key, so every downstream system — weapons, flight, HUD — keeps reading a
-   * plain held-or-not boolean and needs no knowledge that toggling exists.
-   */
-  private fireLatched = false;
-  private boostLatched = false;
   /** Persistent throttle setpoint in -1..1, used only while `cruiseThrottle` is enabled. */
   private cruiseSetpoint = 0;
-  /*
-   * Previous-frame physical state for the latched actions. The latches flip on a rising edge
-   * detected here rather than off `actionPressed`, because `actionPressed` is cleared by
-   * `endStep` on the *simulation* cadence while `update` runs on the *frame* cadence — above
-   * 60 fps a single press would otherwise be observed several times and toggle several times.
-   */
-  private firePrevPhysical = false;
-  private boostPrevPhysical = false;
 
   private device: Device = Device.Keyboard;
   private rebindTarget: InputAction | null = null;
@@ -219,16 +204,6 @@ export class InputManager implements InputState {
   }
 
   isDown(action: InputAction): boolean {
-    // Latched actions answer from the latch alone. Falling back to the raw key as well would
-    // make a toggle-off press read as "still down" for exactly as long as the player held it,
-    // which lands as an unresponsive control rather than a toggle.
-    if (action === 'firePrimary' && this.settings.toggleFire) return this.fireLatched;
-    if (action === 'boost' && this.settings.toggleBoost) return this.boostLatched;
-    return this.isPhysicallyDown(action);
-  }
-
-  /** The raw device state, before any rollover-relief latching. */
-  private isPhysicallyDown(action: InputAction): boolean {
     if (this.actionKeyDown[action] || this.actionGamepadDown[action]) return true;
     if (action === 'firePrimary') return this.mouseLeftDown;
     if (action === 'fireSecondary') return this.mouseRightDown;
@@ -330,33 +305,13 @@ export class InputManager implements InputState {
   }
 
   /**
-   * Advances the rollover-relief latches: the fire/boost toggles and the cruise setpoint.
-   *
-   * Each option is inert while disabled, and its latch is reset rather than left holding a
-   * stale value — flipping the setting off mid-flight must not leave the guns welded on.
+   * Advances the cruise-throttle setpoint. Inert — and reset rather than left holding a stale
+   * value — while the option is off, so flipping it off mid-flight cannot strand the ship at a
+   * throttle the player can no longer see or change.
    */
   private updateLatches(rawDt: number): void {
-    const firePhysical = this.isPhysicallyDown('firePrimary');
-    if (this.settings.toggleFire) {
-      if (firePhysical && !this.firePrevPhysical) this.fireLatched = !this.fireLatched;
-    } else {
-      this.fireLatched = false;
-    }
-    this.firePrevPhysical = firePhysical;
-
-    const boostPhysical = this.isPhysicallyDown('boost');
-    if (this.settings.toggleBoost) {
-      if (boostPhysical && !this.boostPrevPhysical) this.boostLatched = !this.boostLatched;
-    } else {
-      this.boostLatched = false;
-    }
-    this.boostPrevPhysical = boostPhysical;
-
     if (this.settings.cruiseThrottle) {
-      // Read the throttle keys physically: cruise is about how long they are *held*, and the
-      // latching above deliberately does not apply to them.
-      const ramp =
-        (this.isPhysicallyDown('throttleUp') ? 1 : 0) - (this.isPhysicallyDown('throttleDown') ? 1 : 0);
+      const ramp = (this.isDown('throttleUp') ? 1 : 0) - (this.isDown('throttleDown') ? 1 : 0);
       if (ramp !== 0) {
         this.cruiseSetpoint = clamp(this.cruiseSetpoint + ramp * CRUISE_RAMP_RATE * rawDt, -1, 1);
       }
@@ -516,12 +471,6 @@ export class InputManager implements InputState {
     }
     this.mouseLeftDown = false;
     this.mouseRightDown = false;
-    // A latched trigger must not keep firing while the player is tabbed out, and the edge
-    // trackers have to forget the pre-blur state or the next real press reads as a repeat.
-    this.fireLatched = false;
-    this.boostLatched = false;
-    this.firePrevPhysical = false;
-    this.boostPrevPhysical = false;
   };
 
   // --- Gamepad ------------------------------------------------------------------------------

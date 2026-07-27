@@ -63,6 +63,7 @@ export function createPlayerState(init: PlayerInit): PlayerState {
     venting: false,
     boost: PLAYER.boostMax,
     boosting: false,
+    blinkTimer: 0,
 
     driftTimer: 0,
     driftCooldown: 0,
@@ -376,6 +377,7 @@ export class PlayerSystem {
     p.venting = false;
     p.boost = PLAYER.boostMax;
     p.boosting = false;
+    p.blinkTimer = 0;
 
     p.driftTimer = 0;
     p.driftCooldown = 0;
